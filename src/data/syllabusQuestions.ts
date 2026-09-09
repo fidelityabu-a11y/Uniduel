@@ -1,4 +1,5 @@
-import { Question, SectionId } from '../types';
+import { Question, SectionId, LeaderboardEntry } from '../types';
+import { FAST_FIRE_QUESTIONS } from './fastFireQuestions';
 
 export const SYLLABUS_SECTIONS: { id: SectionId; name: string; description: string; icon: string; topics: string[] }[] = [
   {
@@ -63,7 +64,7 @@ export const SYLLABUS_SECTIONS: { id: SectionId; name: string; description: stri
   }
 ];
 
-export const QUESTION_BANK: Question[] = [
+export const BASE_SYLLABUS_QUESTIONS: Question[] = [
   // ================= DATA ANALYSIS (Including Syllabus Samples) =================
   {
     id: 'da-01',
@@ -763,103 +764,228 @@ export const QUESTION_BANK: Question[] = [
     correctIndex: 0,
     explanation: 'Nairobi (Kenya), Accra (Ghana), and Dakar (Senegal) are sovereign national capitals. Kano is a historic commercial state capital city within Nigeria.',
     difficulty: 'Medium'
+  },
+  // Additional Syllabus Questions
+  {
+    id: 'da-extra-01',
+    section: 'data_analysis',
+    topic: 'Conditional Probability',
+    question: 'In a class of 50 students, 30 study Mathematics, 25 study Physics, and 15 study both. If a student who studies Physics is selected at random, what is the probability that they also study Mathematics?',
+    options: ['15/50 (30%)', '15/25 (60%)', '15/30 (50%)', '25/50 (50%)'],
+    correctIndex: 1,
+    explanation: 'Conditional Probability P(Math | Physics) = n(Math ∩ Physics) / n(Physics) = 15 / 25 = 60%.',
+    difficulty: 'Medium'
+  },
+  {
+    id: 'da-extra-02',
+    section: 'data_analysis',
+    topic: 'Combinations & Team Selection',
+    question: 'In how many ways can a delegation committee of 3 students be selected from a quiz club of 7 members?',
+    options: ['21', '35', '42', '210'],
+    correctIndex: 1,
+    explanation: 'C(7, 3) = 7! / (3! × 4!) = (7 × 6 × 5) / (3 × 2 × 1) = 35 ways.',
+    difficulty: 'Medium'
+  },
+  {
+    id: 'da-extra-03',
+    section: 'data_analysis',
+    topic: 'Weighted Mean',
+    question: 'A student scores 70 in a test with weight 2, and 85 in an exam with weight 3. What is the weighted average score?',
+    options: ['76.0', '77.5', '79.0', '80.0'],
+    correctIndex: 2,
+    explanation: 'Weighted Mean = (70 × 2 + 85 × 3) / (2 + 3) = (140 + 255) / 5 = 395 / 5 = 79.0.',
+    difficulty: 'Medium'
+  },
+  {
+    id: 'am-extra-01',
+    section: 'applied_math',
+    topic: 'Calculus Optimization',
+    question: 'The cost function of producing x units is C(x) = 2x² - 40x + 500. For what value of x is the total cost minimized?',
+    options: ['x = 10', 'x = 15', 'x = 20', 'x = 25'],
+    correctIndex: 0,
+    explanation: 'Set the derivative C\'(x) = 4x - 40 = 0 => 4x = 40 => x = 10.',
+    difficulty: 'Medium'
+  },
+  {
+    id: 'am-extra-02',
+    section: 'applied_math',
+    topic: 'pH Calculation',
+    question: 'If the hydrogen ion concentration [H+] of a solution is 1.0 × 10⁻⁴ mol/L, what is its pH value?',
+    options: ['2', '4', '7', '10'],
+    correctIndex: 1,
+    explanation: 'pH = -log₁₀[H+] = -log₁₀(1.0 × 10⁻⁴) = -(-4) = 4 (Acidic).',
+    difficulty: 'Easy'
+  },
+  {
+    id: 'am-extra-03',
+    section: 'applied_math',
+    topic: 'Work & Power Physics',
+    question: 'An electric motor lifts a 50 kg mass vertically through a height of 10 meters in 5 seconds (taking g = 10 m/s²). What is the mechanical power output?',
+    options: ['500 W', '1000 W', '2500 W', '5000 W'],
+    correctIndex: 1,
+    explanation: 'Work = m × g × h = 50 × 10 × 10 = 5000 Joules. Power = Work / Time = 5000 / 5 = 1000 Watts.',
+    difficulty: 'Medium'
+  },
+  {
+    id: 'gk-extra-01',
+    section: 'general_knowledge',
+    topic: 'African Engineering & Landmarks',
+    question: 'The Grand Ethiopian Renaissance Dam (GERD), the largest hydroelectric power plant in Africa, is constructed on which tributary of the Nile?',
+    options: ['White Nile', 'Blue Nile', 'Atbara River', 'Sobot River'],
+    correctIndex: 1,
+    explanation: 'The GERD is built on the Blue Nile River in the Benishangul-Gumuz Region of Ethiopia.',
+    difficulty: 'Medium'
+  },
+  {
+    id: 'gk-extra-02',
+    section: 'general_knowledge',
+    topic: 'Nobel Laureates',
+    question: 'Who was the first African woman to be awarded the Nobel Peace Prize (awarded in 2004 for sustainable development, democracy and peace)?',
+    options: ['Ellen Johnson Sirleaf', 'Wangari Maathai', 'Graça Machel', 'Nadine Gordimer'],
+    correctIndex: 1,
+    explanation: 'Wangari Maathai, founder of the Green Belt Movement in Kenya, won the Nobel Peace Prize in 2004.',
+    difficulty: 'Easy'
+  },
+  {
+    id: 'gk-extra-03',
+    section: 'general_knowledge',
+    topic: 'Pre-Colonial African Empires',
+    question: 'Which legendary emperor of the Mali Empire is renowned for his 1324 pilgrimage to Mecca that showcased the immense gold wealth of West Africa?',
+    options: ['Sundiata Keita', 'Mansa Musa', 'Askia the Great', 'Sonni Ali'],
+    correctIndex: 1,
+    explanation: 'Mansa Musa I of Mali undertook his famous hajj in 1324, famously distributing gold across Cairo and the Middle East.',
+    difficulty: 'Easy'
+  },
+  {
+    id: 'vr-extra-01',
+    section: 'verbal_reasoning',
+    topic: 'Coded Operators',
+    question: 'If "+" means "multiply", "-" means "divide", "×" means "add", and "÷" means "subtract", evaluate: 20 - 4 + 3 × 8 ÷ 2.',
+    options: ['21', '23', '25', '27'],
+    correctIndex: 0,
+    explanation: 'Substituting operators: 20 ÷ 4 × 3 + 8 - 2 = (5 × 3) + 8 - 2 = 15 + 8 - 2 = 21.',
+    difficulty: 'Medium'
+  },
+  {
+    id: 'vr-extra-02',
+    section: 'verbal_reasoning',
+    topic: 'Logical Deductions',
+    question: 'Statements: No birds are mammals. All bats are mammals.\nWhich of the following must follow logically?',
+    options: ['All bats are birds', 'No bats are birds', 'Some birds are bats', 'Some mammals are birds'],
+    correctIndex: 1,
+    explanation: 'Since no mammals are birds, and all bats are inside mammals, no bats can be birds.',
+    difficulty: 'Easy'
+  },
+  {
+    id: 'vr-extra-03',
+    section: 'verbal_reasoning',
+    topic: 'Seating / Ordering Puzzle',
+    question: 'In a single-file line of 25 contestants, Kemi is 8th from the front. What is her rank from the back?',
+    options: ['16th', '17th', '18th', '19th'],
+    correctIndex: 2,
+    explanation: 'Rank from back = Total contestants - Rank from front + 1 = 25 - 8 + 1 = 18th.',
+    difficulty: 'Easy'
+  },
+  {
+    id: 'da-extra-04',
+    section: 'data_analysis',
+    topic: 'Quartiles & Interquartile Range',
+    question: 'If the first quartile (Q1) of a dataset is 24 and the third quartile (Q3) is 58, what is the Interquartile Range (IQR)?',
+    options: ['34', '41', '82', '17'],
+    correctIndex: 0,
+    explanation: 'IQR = Q3 - Q1 = 58 - 24 = 34.',
+    difficulty: 'Easy'
+  },
+  {
+    id: 'da-extra-05',
+    section: 'data_analysis',
+    topic: 'Permutations of Distinct Letters',
+    question: 'How many distinct 4-letter arrangements can be formed from the letters in the word "MATH"?',
+    options: ['24', '16', '12', '48'],
+    correctIndex: 0,
+    explanation: '4 distinct letters can be arranged in 4! = 4 × 3 × 2 × 1 = 24 distinct ways.',
+    difficulty: 'Easy'
+  },
+  {
+    id: 'am-extra-04',
+    section: 'applied_math',
+    topic: 'Quadratic Discriminant',
+    question: 'For the quadratic equation 2x² - 4x + 2 = 0, what is the value of the discriminant (b² - 4ac)?',
+    options: ['0 (One real repeated root)', '16 (Two distinct real roots)', '-16 (Complex roots)', '8 (Irrational roots)'],
+    correctIndex: 0,
+    explanation: 'Discriminant = (-4)² - 4(2)(2) = 16 - 16 = 0, indicating exactly one real repeated root.',
+    difficulty: 'Easy'
+  },
+  {
+    id: 'am-extra-05',
+    section: 'applied_math',
+    topic: 'Vectors & Scalar Dot Product',
+    question: 'What is the scalar dot product of vectors u = (3, 4) and v = (2, -1)?',
+    options: ['2', '10', '14', '-2'],
+    correctIndex: 0,
+    explanation: 'u · v = (3 × 2) + (4 × -1) = 6 - 4 = 2.',
+    difficulty: 'Easy'
+  },
+  {
+    id: 'gk-extra-04',
+    section: 'general_knowledge',
+    topic: 'African Literature',
+    question: 'Who wrote the celebrated African classic novel "Things Fall Apart" published in 1958?',
+    options: ['Chinua Achebe', 'Wole Soyinka', 'Ngũgĩ wa Thiong\'o', 'Chimamanda Ngozi Adichie'],
+    correctIndex: 0,
+    explanation: 'Chinua Achebe wrote "Things Fall Apart", which has sold over 20 million copies and translated into 50+ languages.',
+    difficulty: 'Easy'
+  },
+  {
+    id: 'gk-extra-05',
+    section: 'general_knowledge',
+    topic: 'West African Waterways',
+    question: 'Into which body of water does the River Niger eventually empty via its vast delta?',
+    options: ['Gulf of Guinea (Atlantic Ocean)', 'Mediterranean Sea', 'Indian Ocean', 'Red Sea'],
+    correctIndex: 0,
+    explanation: 'The River Niger flows through Guinea, Mali, Niger, Benin, and Nigeria before emptying into the Gulf of Guinea.',
+    difficulty: 'Easy'
+  },
+  {
+    id: 'vr-extra-04',
+    section: 'verbal_reasoning',
+    topic: 'Blood Relations Puzzle',
+    question: 'Pointing to a photograph, Tunde says: "She is the only daughter of my mother\'s only son." Who is the person in the photograph to Tunde?',
+    options: ['His daughter', 'His sister', 'His mother', 'His niece'],
+    correctIndex: 0,
+    explanation: 'Tunde’s mother’s only son is Tunde himself. Therefore, the only daughter of Tunde is his daughter.',
+    difficulty: 'Easy'
+  },
+  {
+    id: 'vr-extra-05',
+    section: 'verbal_reasoning',
+    topic: 'Circular Seating Logic',
+    question: 'Four friends (A, B, C, D) sit in a circle facing inward. If A is directly opposite C, and B is to the immediate right of A, who is directly opposite B?',
+    options: ['D', 'C', 'A', 'Cannot be determined'],
+    correctIndex: 0,
+    explanation: 'In a 4-person circle, if A faces C, the remaining opposite pair must be B and D.',
+    difficulty: 'Easy'
   }
 ];
 
+export { FAST_FIRE_QUESTIONS };
+
+export const QUESTION_BANK: Question[] = [
+  ...FAST_FIRE_QUESTIONS,
+  ...BASE_SYLLABUS_QUESTIONS
+];
+
 export const TIMER_PRESETS = [
-  { id: 'blitz', label: '10s Lightning Duel', seconds: 10, description: 'Simulates the live buzzer pressure on the UDuel stage', badge: 'Stage Buzzer' },
+  { id: 'rapid', label: '5s Rapid Buzzer', seconds: 5, description: 'Direct mental recall and 5-second buzzer reflex under maximum stage pressure', badge: 'Ultra Blitz' },
+  { id: 'blitz', label: '10s Lightning Duel', seconds: 10, description: 'Rapid mental problem solving in 5-10 seconds on the UDuel stage', badge: '10s Lightning' },
   { id: 'tournament', label: '20s Tournament', seconds: 20, description: 'Official competition pace balancing speed & precision', badge: 'UDuel Standard' },
   { id: 'standard', label: '30s Duel Pace', seconds: 30, description: 'Generous time to calculate multi-step math problems', badge: 'Recommended' },
   { id: 'study', label: '60s Deliberate Drill', seconds: 60, description: 'Focused learning pace for comprehensive review', badge: 'Deep Prep' },
   { id: 'untimed', label: 'Untimed Practice', seconds: null, description: 'No countdown timer. Solve at your own comfortable pace', badge: 'Zen Study' }
 ];
 
-export const INITIAL_LEADERBOARD = [
-  {
-    id: 'lb-1',
-    rank: 1,
-    name: 'Chukwuemeka Okonkwo',
-    university: 'University of Ibadan (UI)',
-    rating: 2480,
-    duelsWon: 89,
-    accuracy: 94.2,
-    bestSection: 'Applied Mathematics',
-    badge: 'Championship Grandmaster',
-    avatarSeed: 'Emeka'
-  },
-  {
-    id: 'lb-2',
-    rank: 2,
-    name: 'Fatima Abdullahi',
-    university: 'Ahmadu Bello University (ABU)',
-    rating: 2415,
-    duelsWon: 76,
-    accuracy: 92.5,
-    bestSection: 'Data Analysis',
-    badge: 'Master Duelist',
-    avatarSeed: 'Fatima'
-  },
-  {
-    id: 'lb-3',
-    rank: 3,
-    name: 'Tunde Adebayo',
-    university: 'University of Lagos (UNILAG)',
-    rating: 2380,
-    duelsWon: 68,
-    accuracy: 90.8,
-    bestSection: 'Verbal & Logical Reasoning',
-    badge: 'Buzzer Virtuoso',
-    avatarSeed: 'Tunde'
-  },
-  {
-    id: 'lb-4',
-    rank: 4,
-    name: 'Ngozi Okafor',
-    university: 'University of Nigeria Nsukka (UNN)',
-    rating: 2320,
-    duelsWon: 59,
-    accuracy: 89.4,
-    bestSection: 'General Knowledge',
-    badge: 'Trivia Titan',
-    avatarSeed: 'Ngozi'
-  },
-  {
-    id: 'lb-5',
-    rank: 5,
-    name: 'Segun Adeleke',
-    university: 'Obafemi Awolowo University (OAU)',
-    rating: 2275,
-    duelsWon: 51,
-    accuracy: 88.0,
-    bestSection: 'Applied Mathematics',
-    badge: 'Duel Ace',
-    avatarSeed: 'Segun'
-  },
-  {
-    id: 'lb-6',
-    rank: 6,
-    name: 'Blessing Kalu',
-    university: 'Covenant University',
-    rating: 2210,
-    duelsWon: 45,
-    accuracy: 87.1,
-    bestSection: 'Data Analysis',
-    badge: 'Stats Specialist',
-    avatarSeed: 'Blessing'
-  },
-  {
-    id: 'lb-7',
-    rank: 7,
-    name: 'Ibrahim Danjuma',
-    university: 'Federal Univ of Tech Akure (FUTA)',
-    rating: 2185,
-    duelsWon: 42,
-    accuracy: 86.4,
-    bestSection: 'Applied Mathematics',
-    badge: 'Calculus Champion',
-    avatarSeed: 'Ibrahim'
-  }
-];
+// Real Leaderboard starts empty and dynamically ranks real contestants as they earn points in duels & quizzes
+export const INITIAL_LEADERBOARD: LeaderboardEntry[] = [];
 
 export const NIGERIAN_UNIVERSITIES = [
   'University of Lagos (UNILAG)',

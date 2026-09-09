@@ -12,7 +12,8 @@ import {
   Sliders,
   CheckCircle2,
   Flame,
-  HelpCircle
+  HelpCircle,
+  Zap
 } from 'lucide-react';
 import { duelSound } from '../utils/audio';
 
@@ -23,6 +24,7 @@ interface PracticeConfigProps {
     questionCount: number;
     timerSeconds: number | null;
     timerLabel: string;
+    questionPace?: 'fast_fire' | 'all' | 'syllabus';
   }) => void;
   onViewSyllabus: () => void;
 }
@@ -33,9 +35,10 @@ export const PracticeConfig: React.FC<PracticeConfigProps> = ({
   onViewSyllabus
 }) => {
   const [selectedSection, setSelectedSection] = useState<SectionId>(initialSection);
-  const [selectedTimerId, setSelectedTimerId] = useState<string>('tournament');
-  const [customTimerValue, setCustomTimerValue] = useState<number>(25);
+  const [selectedTimerId, setSelectedTimerId] = useState<string>('rapid');
+  const [customTimerValue, setCustomTimerValue] = useState<number>(10);
   const [isCustomTimer, setIsCustomTimer] = useState<boolean>(false);
+  const [questionPace, setQuestionPace] = useState<'fast_fire' | 'all' | 'syllabus'>('fast_fire');
   const [questionCount, setQuestionCount] = useState<number>(10);
 
   const getSectionIcon = (id: SectionId) => {
@@ -64,15 +67,16 @@ export const PracticeConfig: React.FC<PracticeConfigProps> = ({
       finalLabel = `${customTimerValue}s Custom Timer`;
     } else {
       const preset = TIMER_PRESETS.find((p) => p.id === selectedTimerId);
-      finalSeconds = preset ? preset.seconds : 20;
-      finalLabel = preset ? preset.label : '20s Tournament';
+      finalSeconds = preset ? preset.seconds : 10;
+      finalLabel = preset ? preset.label : '10s Lightning Duel';
     }
 
     onStartQuiz({
       section: selectedSection,
       questionCount,
       timerSeconds: finalSeconds,
-      timerLabel: finalLabel
+      timerLabel: finalLabel,
+      questionPace
     });
   };
 
@@ -292,11 +296,107 @@ export const PracticeConfig: React.FC<PracticeConfigProps> = ({
         )}
       </div>
 
-      {/* Step 3: Round Length */}
+      {/* Step 3: Question Pace & Problem Type */}
+      <div id="question-pace-step" className="space-y-3 rounded-2xl bg-[#091433] border border-[#182a57] p-6">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+          <label className="text-xs font-bold uppercase tracking-wider text-cyan-300 flex items-center gap-2">
+            <span className="w-5 h-5 rounded-full bg-cyan-600 text-white flex items-center justify-center text-[10px]">3</span>
+            Question Speed & Complexity Focus
+          </label>
+          <span className="text-xs text-blue-300/70">
+            Tailor questions for fast mental calculation vs in-depth analysis
+          </span>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <button
+            type="button"
+            id="pace-fast-fire-btn"
+            onClick={() => {
+              duelSound.playTick();
+              setQuestionPace('fast_fire');
+            }}
+            className={`p-4 rounded-xl border text-left transition-all relative ${
+              questionPace === 'fast_fire'
+                ? 'bg-blue-900/40 border-cyan-400 ring-1 ring-cyan-400 shadow-md shadow-cyan-500/10'
+                : 'bg-[#0b1738] border-blue-900/60 hover:bg-[#0f1f4d] text-blue-200'
+            }`}
+          >
+            <div className="flex items-center justify-between mb-1">
+              <span className="inline-flex items-center gap-1.5 text-xs font-black text-cyan-300">
+                <Zap className="w-4 h-4 text-amber-400 fill-amber-400" />
+                5-10s Mental Solve
+              </span>
+              <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-bold border border-emerald-500/30">
+                ⚡ Rapid-Fire
+              </span>
+            </div>
+            <p className="text-[11px] text-blue-200/80 leading-relaxed">
+              Mentally solvable in 5–10 seconds. No pen or scratch paper needed—pure speed and recall.
+            </p>
+          </button>
+
+          <button
+            type="button"
+            id="pace-all-btn"
+            onClick={() => {
+              duelSound.playTick();
+              setQuestionPace('all');
+            }}
+            className={`p-4 rounded-xl border text-left transition-all relative ${
+              questionPace === 'all'
+                ? 'bg-blue-900/40 border-cyan-400 ring-1 ring-cyan-400 shadow-md shadow-cyan-500/10'
+                : 'bg-[#0b1738] border-blue-900/60 hover:bg-[#0f1f4d] text-blue-200'
+            }`}
+          >
+            <div className="flex items-center justify-between mb-1">
+              <span className="inline-flex items-center gap-1.5 text-xs font-black text-white">
+                <Sparkles className="w-4 h-4 text-cyan-400" />
+                Championship Mix
+              </span>
+              <span className="text-[9px] px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-300 font-bold border border-blue-500/30">
+                All 100+
+              </span>
+            </div>
+            <p className="text-[11px] text-blue-200/80 leading-relaxed">
+              Full bank: blends 5-10s lightning mental buzzer problems with multi-step analytical challenges.
+            </p>
+          </button>
+
+          <button
+            type="button"
+            id="pace-syllabus-btn"
+            onClick={() => {
+              duelSound.playTick();
+              setQuestionPace('syllabus');
+            }}
+            className={`p-4 rounded-xl border text-left transition-all relative ${
+              questionPace === 'syllabus'
+                ? 'bg-blue-900/40 border-cyan-400 ring-1 ring-cyan-400 shadow-md shadow-cyan-500/10'
+                : 'bg-[#0b1738] border-blue-900/60 hover:bg-[#0f1f4d] text-blue-200'
+            }`}
+          >
+            <div className="flex items-center justify-between mb-1">
+              <span className="inline-flex items-center gap-1.5 text-xs font-black text-amber-300">
+                <HelpCircle className="w-4 h-4 text-amber-400" />
+                Syllabus Deep Drill
+              </span>
+              <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 font-bold border border-amber-500/30">
+                Official
+              </span>
+            </div>
+            <p className="text-[11px] text-blue-200/80 leading-relaxed">
+              Sample questions directly referenced from the official University Duel PDF guide.
+            </p>
+          </button>
+        </div>
+      </div>
+
+      {/* Step 4: Round Length */}
       <div id="round-length-step" className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 p-5 rounded-xl bg-[#091433] border border-[#182a57]">
         <div>
           <label className="text-xs font-bold uppercase tracking-wider text-blue-300 flex items-center gap-2">
-            <span className="w-5 h-5 rounded-full bg-blue-600 text-white flex items-center justify-center text-[10px]">3</span>
+            <span className="w-5 h-5 rounded-full bg-blue-600 text-white flex items-center justify-center text-[10px]">4</span>
             Questions Per Duel Round
           </label>
           <span className="text-xs text-blue-300/70 mt-0.5 block">
@@ -333,6 +433,7 @@ export const PracticeConfig: React.FC<PracticeConfigProps> = ({
             {selectedSection === 'mixed' ? 'Mixed Duel' : SYLLABUS_SECTIONS.find((s) => s.id === selectedSection)?.name}
           </strong>{' '}
           ({questionCount} Questions,{' '}
+          {questionPace === 'fast_fire' ? '⚡ 5-10s Mental Solve, ' : questionPace === 'syllabus' ? 'Official Syllabus, ' : ''}
           {isCustomTimer ? `${customTimerValue}s per question` : TIMER_PRESETS.find((p) => p.id === selectedTimerId)?.label})
         </div>
 

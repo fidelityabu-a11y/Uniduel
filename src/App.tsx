@@ -10,6 +10,7 @@ import { SyllabusExplorer } from './components/SyllabusExplorer';
 import { ProfileModal } from './components/ProfileModal';
 import { getStoredProfile, getStoredStats, UserProfile } from './utils/storage';
 import { duelSound } from './utils/audio';
+import { shuffleArray } from './utils/shuffle';
 
 export default function App() {
   const [currentMode, setCurrentMode] = useState<QuizMode>('section_practice');
@@ -25,6 +26,13 @@ export default function App() {
     section: SectionId;
     timerSeconds: number | null;
     timerLabel: string;
+    config: {
+      section: SectionId;
+      questionCount: number;
+      timerSeconds: number | null;
+      timerLabel: string;
+      questionPace?: 'fast_fire' | 'all' | 'syllabus';
+    };
   } | null>(null);
 
   // Shared question set for Friend Duel
@@ -50,38 +58,55 @@ export default function App() {
     questionCount: number;
     timerSeconds: number | null;
     timerLabel: string;
+    questionPace?: 'fast_fire' | 'all' | 'syllabus';
   }) => {
     let pool = QUESTION_BANK;
     if (config.section !== 'mixed') {
       pool = QUESTION_BANK.filter((q) => q.section === config.section);
     }
-    // Randomize pool
-    const shuffled = [...pool].sort(() => Math.random() - 0.5).slice(0, config.questionCount);
+
+    // Filter or prioritize based on requested question pace
+    const isSpeedTimer = config.timerSeconds !== null && config.timerSeconds <= 10;
+    const preferFastFire =
+      config.questionPace === 'fast_fire' ||
+      (isSpeedTimer && config.questionPace !== 'all' && config.questionPace !== 'syllabus');
+
+    let candidatePool: Question[];
+    if (preferFastFire) {
+      const fastFire = shuffleArray(pool.filter((q) => q.isFastFire));
+      const standard = shuffleArray(pool.filter((q) => !q.isFastFire));
+      candidatePool = [...fastFire, ...standard];
+    } else if (config.questionPace === 'syllabus') {
+      const syllabusOnly = shuffleArray(pool.filter((q) => q.fromSyllabus));
+      const others = shuffleArray(pool.filter((q) => !q.fromSyllabus));
+      candidatePool = [...syllabusOnly, ...others];
+    } else {
+      candidatePool = shuffleArray(pool);
+    }
+
+    // Always do a Fisher-Yates shuffle on the final selected questions
+    const selectedQuestions = shuffleArray(candidatePool.slice(0, config.questionCount));
 
     setActiveQuizState({
       isActive: true,
-      questions: shuffled,
+      questions: selectedQuestions,
       section: config.section,
       timerSeconds: config.timerSeconds,
-      timerLabel: config.timerLabel
+      timerLabel: config.timerLabel,
+      config
     });
   };
 
   const handleChallengeFriend = (questions: Question[]) => {
     setActiveQuizState(null);
-    setFriendDuelQuestions(questions);
+    setFriendDuelQuestions(shuffleArray(questions));
     setCurrentMode('friend_duel');
   };
 
   const handleRestartQuiz = () => {
     if (!activeQuizState) return;
-    // Reshuffle or restart same questions
-    const reshuffled = [...activeQuizState.questions].sort(() => Math.random() - 0.5);
-    setActiveQuizState({
-      ...activeQuizState,
-      questions: reshuffled,
-      isActive: true
-    });
+    // Resample fresh randomized questions using the same config
+    handleStartPractice(activeQuizState.config);
   };
 
   const refreshStats = () => {

@@ -11,6 +11,8 @@ export interface Question {
   difficulty: 'Easy' | 'Medium' | 'Hard';
   fromSyllabus?: boolean;
   referenceSource?: string;
+  solveTimeSeconds?: number;
+  isFastFire?: boolean;
 }
 
 export type QuizMode = 'section_practice' | 'mixed_duel' | 'friend_duel' | 'leaderboard' | 'syllabus' | 'stats';
@@ -61,6 +63,7 @@ export interface LeaderboardEntry {
   university: string;
   rating: number;
   duelsWon: number;
+  totalPoints?: number;
   accuracy: number;
   bestSection: string;
   badge: string;

@@ -10,10 +10,16 @@ import {
   Volume2,
   VolumeX,
   Flame,
-  GraduationCap
+  GraduationCap,
+  Download
 } from 'lucide-react';
 import { duelSound } from '../utils/audio';
 import { UserProfile } from '../utils/storage';
+
+interface BeforeInstallPromptEvent extends Event {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>;
+}
 
 interface NavbarProps {
   currentMode: QuizMode;
@@ -34,6 +40,27 @@ export const Navbar: React.FC<NavbarProps> = ({
   soundEnabled,
   onToggleSound
 }) => {
+  const [installPrompt, setInstallPrompt] = React.useState<BeforeInstallPromptEvent | null>(null);
+
+  React.useEffect(() => {
+    const handleBeforeInstall = (e: Event) => {
+      e.preventDefault();
+      setInstallPrompt(e as BeforeInstallPromptEvent);
+    };
+    window.addEventListener('beforeinstallprompt', handleBeforeInstall);
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstall);
+    };
+  }, []);
+
+  const handleInstallClick = async () => {
+    if (!installPrompt) return;
+    await installPrompt.prompt();
+    const choice = await installPrompt.userChoice;
+    if (choice.outcome === 'accepted') {
+      setInstallPrompt(null);
+    }
+  };
   return (
     <header
       id="app-navbar"
@@ -134,6 +161,19 @@ export const Navbar: React.FC<NavbarProps> = ({
 
         {/* Right Actions: Streak, Audio, Profile */}
         <div className="flex items-center gap-2">
+          {/* In-app PWA install button */}
+          {installPrompt && (
+            <button
+              id="pwa-install-header-btn"
+              onClick={handleInstallClick}
+              className="px-2.5 py-1.5 rounded-lg bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white text-xs font-bold flex items-center gap-1.5 shadow-md shadow-cyan-500/20 transition-all animate-pulse"
+              title="Install UDuel Prep to your device"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Install App</span>
+            </button>
+          )}
+
           {/* Streak Indicator */}
           <div
             id="streak-badge"
