@@ -47,7 +47,8 @@ import {
   leaveDuelRoom,
   subscribeToDuelRoom,
   getOrCreateClientId,
-  getDuelRoom
+  getDuelRoom,
+  normalizeRoomCode
 } from '../utils/duelRoomService';
 import { OnlineRoomLobby } from './OnlineRoomLobby';
 import { OnlineRoomArena } from './OnlineRoomArena';
@@ -66,7 +67,7 @@ export const FriendDuel: React.FC<FriendDuelProps> = ({
   onOpenLeaderboard
 }) => {
   const [storedProfile, setStoredProfile] = useState<UserProfile>(getStoredProfile());
-  const myPlayerId = useRef<string>(getOrCreateClientId()).current;
+  const [myPlayerId, setMyPlayerId] = useState<string>(() => getOrCreateClientId());
 
   // Format selection ('room_code' by default for online challenge)
   const [duelFormat, setDuelFormat] = useState<DuelFormat>('room_code');
@@ -74,18 +75,28 @@ export const FriendDuel: React.FC<FriendDuelProps> = ({
   // Shared Profile Setup initialized with stored profile
   const [hostName, setHostName] = useState<string>(storedProfile.name || 'Contestant');
   const [hostUni, setHostUni] = useState<string>(storedProfile.university || 'University of Lagos (UNILAG)');
-  const [guestName, setGuestName] = useState<string>(storedProfile.name ? `${storedProfile.name} (Guest)` : 'Challenger Friend');
-  const [guestUni, setGuestUni] = useState<string>(storedProfile.university || 'University of Lagos (UNILAG)');
+  const [guestName, setGuestName] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('uduel_guest_name');
+      if (saved) return saved;
+    }
+    return 'Challenger';
+  });
+  const [guestUni, setGuestUni] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('uduel_guest_uni');
+      if (saved) return saved;
+    }
+    return 'Obafemi Awolowo University (OAU)';
+  });
 
-  // Auto-listen to profile updates so user never has to re-type
+  // Auto-listen to profile updates so user profile changes update host
   useEffect(() => {
     const handleProfileUpdate = (e: any) => {
       const updated: UserProfile = e.detail || getStoredProfile();
       setStoredProfile(updated);
-      setHostName(updated.name);
-      setHostUni(updated.university);
-      setGuestName(`${updated.name} (Guest)`);
-      setGuestUni(updated.university);
+      if (updated.name) setHostName(updated.name);
+      if (updated.university) setHostUni(updated.university);
     };
 
     window.addEventListener('uduel_profile_updated', handleProfileUpdate);
@@ -94,7 +105,7 @@ export const FriendDuel: React.FC<FriendDuelProps> = ({
 
   const updateAndSaveHostName = (name: string) => {
     setHostName(name);
-    const updated = { ...storedProfile, name: name.trim() || 'Contestant' };
+    const updated = { ...storedProfile, name };
     saveStoredProfile(updated);
     setStoredProfile(updated);
   };
@@ -108,16 +119,16 @@ export const FriendDuel: React.FC<FriendDuelProps> = ({
 
   const updateAndSaveGuestName = (name: string) => {
     setGuestName(name);
-    const updated = { ...storedProfile, name: name.trim() || 'Contestant' };
-    saveStoredProfile(updated);
-    setStoredProfile(updated);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('uduel_guest_name', name);
+    }
   };
 
   const updateAndSaveGuestUni = (uni: string) => {
     setGuestUni(uni);
-    const updated = { ...storedProfile, university: uni };
-    saveStoredProfile(updated);
-    setStoredProfile(updated);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('uduel_guest_uni', uni);
+    }
   };
 
   const [questionCount, setQuestionCount] = useState<number>(8);
@@ -130,6 +141,7 @@ export const FriendDuel: React.FC<FriendDuelProps> = ({
   const [isJoiningRoom, setIsJoiningRoom] = useState<boolean>(false);
   const [joinError, setJoinError] = useState<string | null>(null);
   const [guestJoinedNotification, setGuestJoinedNotification] = useState<string | null>(null);
+  const [urlInviteCode, setUrlInviteCode] = useState<string | null>(null);
 
   // Local Same-Device Buzzer Battle State
   const [isLocalDuelActive, setIsLocalDuelActive] = useState<boolean>(false);
@@ -229,8 +241,10 @@ export const FriendDuel: React.FC<FriendDuelProps> = ({
       const params = new URLSearchParams(window.location.search);
       const roomParam = params.get('duelRoom');
       if (roomParam) {
+        const normalized = normalizeRoomCode(roomParam);
         setDuelFormat('room_code');
-        setJoinCodeInput(roomParam.trim().toUpperCase());
+        setJoinCodeInput(normalized);
+        setUrlInviteCode(normalized);
       }
     }
   }, []);
@@ -290,7 +304,8 @@ export const FriendDuel: React.FC<FriendDuelProps> = ({
   };
 
   const handleJoinOnlineRoom = async (codeToJoin?: string) => {
-    const targetCode = (codeToJoin || joinCodeInput).trim().toUpperCase();
+    const rawCode = codeToJoin || joinCodeInput;
+    const targetCode = normalizeRoomCode(rawCode);
     if (!targetCode) {
       setJoinError('Please enter a challenge room code.');
       return;
@@ -311,9 +326,13 @@ export const FriendDuel: React.FC<FriendDuelProps> = ({
     setIsJoiningRoom(false);
 
     if (res.success && res.room) {
+      if (res.guestId && res.guestId !== myPlayerId) {
+        setMyPlayerId(res.guestId);
+      }
       duelSound.playFanfare();
       setActiveOnlineRoom(res.room);
       saveStoredOnlineRoomId(res.room.id);
+      setUrlInviteCode(null);
     } else {
       setJoinError(res.error || 'Failed to join room. Please verify the code.');
     }
@@ -1020,6 +1039,48 @@ export const FriendDuel: React.FC<FriendDuelProps> = ({
       {duelFormat === 'room_code' ? (
         /* ONLINE 1v1 ROOM CREATION & JOINING */
         <div className="space-y-5">
+          {/* Invite Code Quick-Join Banner */}
+          {urlInviteCode && (
+            <div
+              id="url-invite-banner"
+              className="p-4 rounded-2xl bg-gradient-to-r from-blue-900/60 via-cyan-900/40 to-blue-900/60 border border-cyan-400 shadow-xl space-y-3 animate-in fade-in slide-in-from-top-4 duration-300"
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-black uppercase tracking-wider text-cyan-300 flex items-center gap-2">
+                  <Swords className="w-4 h-4 text-cyan-400" />
+                  Direct Duel Invitation Received
+                </span>
+                <span className="text-xs font-mono font-bold px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-200 border border-cyan-500/40">
+                  Room: {urlInviteCode}
+                </span>
+              </div>
+              <p className="text-xs text-blue-200">
+                You were invited to compete in room <strong className="text-cyan-300 font-mono">{urlInviteCode}</strong>.
+                Verify your contestant name and tap below to enter the lobby!
+              </p>
+              <div className="flex flex-col sm:flex-row items-center gap-3">
+                <div className="w-full sm:w-1/2">
+                  <input
+                    type="text"
+                    placeholder="Your Contestant Name"
+                    value={guestName}
+                    onChange={(e) => updateAndSaveGuestName(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-[#070e24] border border-cyan-500/50 text-white text-xs font-bold focus:outline-none focus:ring-1 focus:ring-cyan-400"
+                  />
+                </div>
+                <button
+                  id="accept-invite-btn"
+                  onClick={() => handleJoinOnlineRoom(urlInviteCode)}
+                  disabled={isJoiningRoom}
+                  className="w-full sm:w-1/2 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-yellow-400 hover:from-amber-400 text-slate-950 font-black text-xs flex items-center justify-center gap-2 shadow-lg shadow-amber-500/20 transition-all cursor-pointer disabled:opacity-50"
+                >
+                  <Zap className="w-4 h-4" />
+                  <span>{isJoiningRoom ? 'Connecting to Room...' : `ACCEPT & JOIN ROOM ${urlInviteCode}`}</span>
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Join Error Banner */}
           {joinError && (
             <div className="p-3.5 rounded-xl bg-rose-950/80 border border-rose-500 text-rose-200 text-xs flex items-center justify-between">
@@ -1050,6 +1111,9 @@ export const FriendDuel: React.FC<FriendDuelProps> = ({
                     type="text"
                     value={hostName}
                     onChange={(e) => updateAndSaveHostName(e.target.value)}
+                    onBlur={() => {
+                      if (!hostName.trim()) updateAndSaveHostName('Contestant');
+                    }}
                     className="w-full mt-1 px-3 py-2 rounded-lg bg-[#070e24] border border-[#1d3570] text-white text-xs focus:outline-none focus:border-cyan-400"
                   />
                 </div>
@@ -1119,18 +1183,30 @@ export const FriendDuel: React.FC<FriendDuelProps> = ({
                 </span>
                 <h3 className="text-base font-bold text-white">Enter Friend's Room</h3>
                 <p className="text-xs text-blue-300/70">
-                  Received a code or invitation link? Enter it here to join their lobby.
+                  Received a code or invitation link? Enter or paste it here to join their lobby.
                 </p>
               </div>
 
               <div className="space-y-3">
                 <div>
-                  <label className="text-[11px] text-blue-300 font-medium block">Room Code (e.g. UD-4821)</label>
+                  <label className="text-[11px] text-blue-300 font-medium block">Room Code or Invite Link</label>
                   <input
                     type="text"
-                    placeholder="Enter 6-character code"
+                    placeholder="Enter code (e.g. UD-4821 or 4821)"
                     value={joinCodeInput}
-                    onChange={(e) => setJoinCodeInput(e.target.value.toUpperCase())}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      if (val.includes('duelRoom=') || val.includes('http')) {
+                        setJoinCodeInput(normalizeRoomCode(val));
+                      } else {
+                        setJoinCodeInput(val.toUpperCase());
+                      }
+                    }}
+                    onBlur={() => {
+                      if (joinCodeInput.trim()) {
+                        setJoinCodeInput(normalizeRoomCode(joinCodeInput));
+                      }
+                    }}
                     className="w-full mt-1 px-3 py-2 rounded-lg bg-[#070e24] border border-[#1d3570] text-cyan-300 text-sm font-mono font-bold tracking-wider uppercase focus:outline-none focus:border-amber-400"
                   />
                 </div>
@@ -1141,6 +1217,9 @@ export const FriendDuel: React.FC<FriendDuelProps> = ({
                     type="text"
                     value={guestName}
                     onChange={(e) => updateAndSaveGuestName(e.target.value)}
+                    onBlur={() => {
+                      if (!guestName.trim()) updateAndSaveGuestName('Challenger');
+                    }}
                     className="w-full mt-1 px-3 py-2 rounded-lg bg-[#070e24] border border-[#1d3570] text-white text-xs focus:outline-none focus:border-amber-400"
                   />
                 </div>

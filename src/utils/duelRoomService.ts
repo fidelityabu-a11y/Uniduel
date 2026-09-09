@@ -45,15 +45,42 @@ try {
   // Graceful fallback if iframe sandbox restricts BroadcastChannel
 }
 
-// Generate persistent unique client ID
-export function getOrCreateClientId(): string {
-  const KEY = 'uduel_contestant_client_id';
-  let id = localStorage.getItem(KEY);
-  if (!id) {
-    id = 'p_' + Math.random().toString(36).substring(2, 10) + '_' + Date.now().toString(36);
-    localStorage.setItem(KEY, id);
+// Normalize duel room codes from text or URL (e.g., 'UD-1234', '1234', 'ud1234', full URL)
+export function normalizeRoomCode(code: string): string {
+  if (!code) return '';
+  let cleaned = String(code).trim();
+  try {
+    if (cleaned.includes('duelRoom=')) {
+      const match = cleaned.match(/duelRoom=([A-Za-z0-9_-]+)/);
+      if (match && match[1]) {
+        cleaned = match[1];
+      }
+    }
+  } catch {}
+  cleaned = cleaned.toUpperCase().replace(/\s+/g, '');
+  if (/^\d{4}$/.test(cleaned)) {
+    cleaned = 'UD-' + cleaned;
   }
-  return id;
+  if (/^UD\d{4}$/.test(cleaned)) {
+    cleaned = 'UD-' + cleaned.substring(2);
+  }
+  return cleaned;
+}
+
+// Generate persistent unique client ID (per tab session so multi-tab testing works flawlessly)
+export function getOrCreateClientId(): string {
+  if (typeof window === 'undefined') return 'p_' + Date.now();
+  const KEY = 'uduel_contestant_client_id';
+  try {
+    let id = sessionStorage.getItem(KEY);
+    if (!id) {
+      id = 'p_' + Math.random().toString(36).substring(2, 10) + '_' + Date.now().toString(36);
+      sessionStorage.setItem(KEY, id);
+    }
+    return id;
+  } catch {
+    return 'p_' + Math.random().toString(36).substring(2, 10) + '_' + Date.now().toString(36);
+  }
 }
 
 function broadcastRoomChange(room: DuelRoom) {
@@ -75,7 +102,7 @@ export async function createDuelRoom(params: {
   questionCount: number;
   section: string;
 }): Promise<DuelRoom> {
-  const normalizedId = params.roomId.trim().toUpperCase();
+  const normalizedId = normalizeRoomCode(params.roomId);
 
   try {
     const res = await fetch('/api/duel/create', {
@@ -122,8 +149,8 @@ export async function createDuelRoom(params: {
 export async function joinDuelRoom(params: {
   roomId: string;
   guest: { id: string; name: string; university: string };
-}): Promise<{ success: boolean; room?: DuelRoom; error?: string }> {
-  const normalizedId = params.roomId.trim().toUpperCase();
+}): Promise<{ success: boolean; room?: DuelRoom; error?: string; guestId?: string; isHost?: boolean }> {
+  const normalizedId = normalizeRoomCode(params.roomId);
 
   try {
     const res = await fetch('/api/duel/join', {
@@ -135,7 +162,7 @@ export async function joinDuelRoom(params: {
     if (res.ok) {
       const data = await res.json();
       broadcastRoomChange(data.room);
-      return { success: true, room: data.room };
+      return { success: true, room: data.room, guestId: data.guestId, isHost: data.isHost };
     } else {
       const errData = await res.json().catch(() => ({}));
       return { success: false, error: errData.error || 'Failed to join room' };
@@ -149,32 +176,73 @@ export async function joinDuelRoom(params: {
   if (raw) {
     try {
       const room: DuelRoom = JSON.parse(raw);
-      if (room.host.id !== params.guest.id) {
-        room.guest = {
-          id: params.guest.id,
-          name: params.guest.name,
-          university: params.guest.university,
-          score: 0,
-          answers: {},
-          isReady: true,
-          lastSeen: Date.now()
-        };
-        room.status = 'ready';
-        room.lastActivity = Date.now();
-        broadcastRoomChange(room);
-        return { success: true, room };
+      let guestId = params.guest.id;
+      if (room.host.id === guestId) {
+        guestId = 'guest_' + Math.random().toString(36).substring(2, 8) + '_' + Date.now().toString(36);
       }
-      return { success: true, room };
+      room.guest = {
+        id: guestId,
+        name: params.guest.name || 'Challenger',
+        university: params.guest.university || 'University of Lagos (UNILAG)',
+        score: 0,
+        answers: {},
+        isReady: true,
+        lastSeen: Date.now()
+      };
+      room.status = 'ready';
+      room.lastActivity = Date.now();
+      broadcastRoomChange(room);
+      return { success: true, room, guestId };
     } catch {
       // parse error
     }
   }
 
-  return { success: false, error: `Could not find room with code ${normalizedId}. Check the code and try again.` };
+  return { success: false, error: `Could not find room with code "${normalizedId}". Check the code and try again.` };
+}
+
+export async function updateDuelPlayerName(params: {
+  roomId: string;
+  playerId: string;
+  name: string;
+  university?: string;
+}): Promise<DuelRoom | null> {
+  const normalizedId = normalizeRoomCode(params.roomId);
+  try {
+    const res = await fetch('/api/duel/update-name', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...params, roomId: normalizedId })
+    });
+    if (res.ok) {
+      const data = await res.json();
+      broadcastRoomChange(data.room);
+      return data.room;
+    }
+  } catch (err) {
+    console.warn('API update name error:', err);
+  }
+
+  const raw = localStorage.getItem(`uduel_room_${normalizedId}`);
+  if (raw) {
+    try {
+      const room: DuelRoom = JSON.parse(raw);
+      if (room.host.id === params.playerId) {
+        if (params.name) room.host.name = params.name.trim();
+        if (params.university) room.host.university = params.university.trim();
+      } else if (room.guest?.id === params.playerId) {
+        if (params.name) room.guest.name = params.name.trim();
+        if (params.university) room.guest.university = params.university.trim();
+      }
+      broadcastRoomChange(room);
+      return room;
+    } catch {}
+  }
+  return null;
 }
 
 export async function fetchDuelRoom(roomId: string, playerId?: string): Promise<DuelRoom | null> {
-  const normalizedId = roomId.trim().toUpperCase();
+  const normalizedId = normalizeRoomCode(roomId);
 
   try {
     const url = `/api/duel/room/${normalizedId}${playerId ? `?playerId=${playerId}` : ''}`;
@@ -201,7 +269,7 @@ export async function fetchDuelRoom(roomId: string, playerId?: string): Promise<
 export const getDuelRoom = fetchDuelRoom;
 
 export async function startDuelMatch(roomId: string, playerId: string): Promise<DuelRoom | null> {
-  const normalizedId = roomId.trim().toUpperCase();
+  const normalizedId = normalizeRoomCode(roomId);
 
   try {
     const res = await fetch('/api/duel/start', {
@@ -239,13 +307,13 @@ export async function submitDuelAnswer(params: {
   timeSpent: number;
   clientTimestamp?: number;
 }): Promise<DuelRoom | null> {
-  const normalizedId = params.roomId.trim().toUpperCase();
+  const normalizedId = normalizeRoomCode(params.roomId);
 
   try {
     const res = await fetch('/api/duel/answer', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(params)
+      body: JSON.stringify({ ...params, roomId: normalizedId })
     });
     if (res.ok) {
       const data = await res.json();
@@ -367,7 +435,7 @@ export async function submitScoreToRealLeaderboard(data: {
 }
 
 export async function advanceDuelRound(roomId: string, qIndex: number): Promise<DuelRoom | null> {
-  const normalizedId = roomId.trim().toUpperCase();
+  const normalizedId = normalizeRoomCode(roomId);
 
   try {
     const res = await fetch('/api/duel/next-round', {
@@ -399,7 +467,7 @@ export async function advanceDuelRound(roomId: string, qIndex: number): Promise<
 }
 
 export async function requestDuelRematch(roomId: string, newQuestions: Question[]): Promise<DuelRoom | null> {
-  const normalizedId = roomId.trim().toUpperCase();
+  const normalizedId = normalizeRoomCode(roomId);
 
   try {
     const res = await fetch('/api/duel/rematch', {
@@ -436,7 +504,7 @@ export async function requestDuelRematch(roomId: string, newQuestions: Question[
 }
 
 export async function leaveDuelRoom(roomId: string, playerId: string): Promise<void> {
-  const normalizedId = roomId.trim().toUpperCase();
+  const normalizedId = normalizeRoomCode(roomId);
   try {
     await fetch('/api/duel/leave', {
       method: 'POST',
@@ -448,13 +516,13 @@ export async function leaveDuelRoom(roomId: string, playerId: string): Promise<v
   }
 }
 
-// Live Room Subscription (Combining BroadcastChannel instant updates + 850ms polling)
+// Live Room Subscription (Combining BroadcastChannel instant updates + 400ms polling)
 export function subscribeToDuelRoom(
   roomId: string,
   playerId: string,
   onUpdate: (room: DuelRoom) => void
 ): () => void {
-  const normalizedId = roomId.trim().toUpperCase();
+  const normalizedId = normalizeRoomCode(roomId);
   let isSubscribed = true;
 
   // 1. BroadcastChannel listener for zero-latency multi-tab updates

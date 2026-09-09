@@ -122,6 +122,27 @@ function updateServerLeaderboardUser(data: {
   realLeaderboard.set(data.playerId, existing);
 }
 
+function normalizeRoomCode(code: string): string {
+  if (!code) return '';
+  let cleaned = String(code).trim();
+  try {
+    if (cleaned.includes('duelRoom=')) {
+      const match = cleaned.match(/duelRoom=([A-Za-z0-9_-]+)/);
+      if (match && match[1]) {
+        cleaned = match[1];
+      }
+    }
+  } catch {}
+  cleaned = cleaned.toUpperCase().replace(/\s+/g, '');
+  if (/^\d{4}$/.test(cleaned)) {
+    cleaned = 'UD-' + cleaned;
+  }
+  if (/^UD\d{4}$/.test(cleaned)) {
+    cleaned = 'UD-' + cleaned.substring(2);
+  }
+  return cleaned;
+}
+
 function finishRoomMatch(room: DuelRoom) {
   room.status = 'finished';
   const p1Score = room.host.score;
@@ -186,7 +207,7 @@ async function startServer() {
         return res.status(400).json({ error: 'Missing roomId or host details' });
       }
 
-      const normalizedId = roomId.trim().toUpperCase();
+      const normalizedId = normalizeRoomCode(roomId);
       const newRoom: DuelRoom = {
         id: normalizedId,
         status: 'waiting',
@@ -223,25 +244,40 @@ async function startServer() {
         return res.status(400).json({ error: 'Missing roomId or guest details' });
       }
 
-      const normalizedId = roomId.trim().toUpperCase();
+      const normalizedId = normalizeRoomCode(roomId);
       const room = rooms.get(normalizedId);
 
       if (!room) {
-        return res.status(404).json({ error: `Room ${normalizedId} not found. Please check code.` });
+        return res.status(404).json({ error: `Room "${normalizedId}" not found. Please verify the code.` });
       }
 
-      // If host re-joins
-      if (room.host.id === guest.id) {
-        room.host.lastSeen = Date.now();
+      // If guest ID matches host ID (e.g. testing in the same browser session or same client ID)
+      let guestPlayerId = guest.id;
+      if (!guestPlayerId || guestPlayerId === room.host.id) {
+        guestPlayerId = 'guest_' + Math.random().toString(36).substring(2, 8) + '_' + Date.now().toString(36);
+      }
+
+      // If this guest was already in the room (e.g. re-joining / refreshing)
+      if (room.guest && (room.guest.id === guest.id || room.guest.id === guestPlayerId)) {
+        if (guest.name && guest.name.trim()) room.guest.name = guest.name.trim();
+        if (guest.university) room.guest.university = guest.university;
+        room.guest.isReady = true;
+        room.guest.lastSeen = Date.now();
         room.lastActivity = Date.now();
-        return res.json({ success: true, room, isHost: true });
+        rooms.set(normalizedId, room);
+        return res.json({ success: true, room, isHost: false, guestId: room.guest.id });
+      }
+
+      // If room already has a different guest and match is actively in progress
+      if (room.guest && room.status === 'in_progress') {
+        return res.status(409).json({ error: 'This duel room already has 2 active contestants in a live match.' });
       }
 
       // Guest joins
       room.guest = {
-        id: guest.id || 'guest_' + Date.now(),
-        name: guest.name || 'Contestant 2',
-        university: guest.university || 'University of Lagos',
+        id: guestPlayerId,
+        name: (guest.name || '').trim() || 'Challenger',
+        university: guest.university || 'University of Lagos (UNILAG)',
         score: 0,
         answers: {},
         isReady: true,
@@ -253,7 +289,33 @@ async function startServer() {
       room.lastActivity = Date.now();
 
       rooms.set(normalizedId, room);
-      return res.json({ success: true, room, isHost: false });
+      return res.json({ success: true, room, isHost: false, guestId: room.guest.id });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Update contestant name/university in room
+  app.post('/api/duel/update-name', (req, res) => {
+    try {
+      const { roomId, playerId, name, university } = req.body;
+      const normalizedId = normalizeRoomCode(roomId || '');
+      const room = rooms.get(normalizedId);
+      if (!room) return res.status(404).json({ error: 'Room not found' });
+
+      if (room.host.id === playerId) {
+        if (name && name.trim()) room.host.name = name.trim();
+        if (university) room.host.university = university.trim();
+      } else if (room.guest?.id === playerId) {
+        if (name && name.trim()) room.guest.name = name.trim();
+        if (university) room.guest.university = university.trim();
+      } else {
+        return res.status(403).json({ error: 'Player not recognized in this room' });
+      }
+
+      room.lastActivity = Date.now();
+      rooms.set(normalizedId, room);
+      return res.json({ success: true, room });
     } catch (err: any) {
       return res.status(500).json({ error: err.message });
     }
@@ -261,7 +323,7 @@ async function startServer() {
 
   // Get current room status
   app.get('/api/duel/room/:id', (req, res) => {
-    const normalizedId = req.params.id.trim().toUpperCase();
+    const normalizedId = normalizeRoomCode(req.params.id);
     const room = rooms.get(normalizedId);
     if (!room) {
       return res.status(404).json({ error: 'Room not found' });
@@ -280,7 +342,7 @@ async function startServer() {
   // Host triggers duel launch
   app.post('/api/duel/start', (req, res) => {
     const { roomId, playerId } = req.body;
-    const normalizedId = (roomId || '').trim().toUpperCase();
+    const normalizedId = normalizeRoomCode(roomId || '');
     const room = rooms.get(normalizedId);
 
     if (!room) {
@@ -300,7 +362,7 @@ async function startServer() {
   // record result, reveal correct answer, and advance to next question for both connected ends!
   app.post('/api/duel/answer', (req, res) => {
     const { roomId, playerId, qIndex, optionIndex, isCorrect, timeSpent, clientTimestamp } = req.body;
-    const normalizedId = (roomId || '').trim().toUpperCase();
+    const normalizedId = normalizeRoomCode(roomId || '');
     const room = rooms.get(normalizedId);
 
     if (!room) {
@@ -400,7 +462,7 @@ async function startServer() {
   // Force next question if timer ran out on one or both
   app.post('/api/duel/next-round', (req, res) => {
     const { roomId, qIndex } = req.body;
-    const normalizedId = (roomId || '').trim().toUpperCase();
+    const normalizedId = normalizeRoomCode(roomId || '');
     const room = rooms.get(normalizedId);
 
     if (!room) return res.status(404).json({ error: 'Room not found' });
@@ -420,7 +482,7 @@ async function startServer() {
   // Request Rematch with fresh questions
   app.post('/api/duel/rematch', (req, res) => {
     const { roomId, newQuestions } = req.body;
-    const normalizedId = (roomId || '').trim().toUpperCase();
+    const normalizedId = normalizeRoomCode(roomId || '');
     const room = rooms.get(normalizedId);
 
     if (!room) return res.status(404).json({ error: 'Room not found' });
@@ -446,7 +508,7 @@ async function startServer() {
   // Leave room
   app.post('/api/duel/leave', (req, res) => {
     const { roomId, playerId } = req.body;
-    const normalizedId = (roomId || '').trim().toUpperCase();
+    const normalizedId = normalizeRoomCode(roomId || '');
     const room = rooms.get(normalizedId);
 
     if (room) {

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { DuelRoom } from '../utils/duelRoomService';
+import { DuelRoom, updateDuelPlayerName } from '../utils/duelRoomService';
+import { NIGERIAN_UNIVERSITIES } from '../data/syllabusQuestions';
 import {
   Users2,
   Copy,
@@ -12,7 +13,9 @@ import {
   Sparkles,
   LogOut,
   Zap,
-  Clock
+  Clock,
+  Edit3,
+  X
 } from 'lucide-react';
 
 interface OnlineRoomLobbyProps {
@@ -33,6 +36,12 @@ export const OnlineRoomLobby: React.FC<OnlineRoomLobbyProps> = ({
   const [copiedLink, setCopiedLink] = useState<boolean>(false);
   const [copiedCode, setCopiedCode] = useState<boolean>(false);
 
+  // Contestant name editing in lobby
+  const [isEditingMyName, setIsEditingMyName] = useState<boolean>(false);
+  const [editName, setEditName] = useState<string>('');
+  const [editUni, setEditUni] = useState<string>('');
+  const [isSavingName, setIsSavingName] = useState<boolean>(false);
+
   const inviteUrl = typeof window !== 'undefined'
     ? `${window.location.origin}/?duelRoom=${room.id}`
     : `/?duelRoom=${room.id}`;
@@ -51,6 +60,30 @@ export const OnlineRoomLobby: React.FC<OnlineRoomLobbyProps> = ({
 
   const openTestTab = () => {
     window.open(inviteUrl, '_blank');
+  };
+
+  const handleStartEdit = () => {
+    if (isHost) {
+      setEditName(room.host.name);
+      setEditUni(room.host.university);
+    } else if (room.guest) {
+      setEditName(room.guest.name);
+      setEditUni(room.guest.university);
+    }
+    setIsEditingMyName(true);
+  };
+
+  const handleSaveEdit = async () => {
+    const finalName = editName.trim() || (isHost ? 'Host Contestant' : 'Challenger');
+    setIsSavingName(true);
+    await updateDuelPlayerName({
+      roomId: room.id,
+      playerId: myPlayerId,
+      name: finalName,
+      university: editUni
+    });
+    setIsSavingName(false);
+    setIsEditingMyName(false);
   };
 
   const hasGuest = Boolean(room.guest);
@@ -125,20 +158,76 @@ export const OnlineRoomLobby: React.FC<OnlineRoomLobbyProps> = ({
                   </span>
                 )}
               </div>
-              <span className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-400">
-                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
-                Connected & Ready
-              </span>
+              <div className="flex items-center gap-2">
+                {room.host.id === myPlayerId && !isEditingMyName && (
+                  <button
+                    id="edit-host-name-btn"
+                    onClick={handleStartEdit}
+                    className="px-2 py-0.5 rounded text-[11px] font-semibold bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/40 flex items-center gap-1 transition-all"
+                    title="Edit Contestant Name"
+                  >
+                    <Edit3 className="w-3 h-3" /> Edit Name
+                  </button>
+                )}
+                <span className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-400">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+                  Connected & Ready
+                </span>
+              </div>
             </div>
 
-            <div className="space-y-1">
-              <div className="text-lg font-black text-white truncate">
-                {room.host.name}
+            {room.host.id === myPlayerId && isEditingMyName ? (
+              <div className="space-y-2 p-3 rounded-xl bg-[#091533] border border-cyan-500/50">
+                <div>
+                  <label className="text-[10px] text-cyan-300 font-bold block mb-1">Edit Your Contestant Name</label>
+                  <input
+                    type="text"
+                    value={editName}
+                    onChange={(e) => setEditName(e.target.value)}
+                    className="w-full px-2.5 py-1.5 rounded-lg bg-[#070e24] border border-cyan-500 text-white text-xs font-bold focus:outline-none focus:ring-1 focus:ring-cyan-400"
+                    placeholder="Enter your name"
+                    autoFocus
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] text-cyan-300 font-bold block mb-1">Edit University</label>
+                  <select
+                    value={editUni}
+                    onChange={(e) => setEditUni(e.target.value)}
+                    className="w-full px-2 py-1.5 rounded-lg bg-[#070e24] border border-[#1f3875] text-white text-xs focus:outline-none focus:border-cyan-400"
+                  >
+                    {NIGERIAN_UNIVERSITIES.map((u) => (
+                      <option key={u} value={u}>{u}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="flex items-center justify-end gap-2 pt-1">
+                  <button
+                    onClick={() => setIsEditingMyName(false)}
+                    className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold flex items-center gap-1"
+                  >
+                    <X className="w-3 h-3" /> Cancel
+                  </button>
+                  <button
+                    id="save-host-name-btn"
+                    onClick={handleSaveEdit}
+                    disabled={isSavingName}
+                    className="px-3 py-1 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-xs font-black flex items-center gap-1 shadow"
+                  >
+                    <Check className="w-3 h-3" /> {isSavingName ? 'Saving...' : 'Save Changes'}
+                  </button>
+                </div>
               </div>
-              <div className="text-xs text-blue-300/80 font-medium truncate">
-                🏛️ {room.host.university}
+            ) : (
+              <div className="space-y-1">
+                <div className="text-lg font-black text-white truncate">
+                  {room.host.name}
+                </div>
+                <div className="text-xs text-blue-300/80 font-medium truncate">
+                  🏛️ {room.host.university}
+                </div>
               </div>
-            </div>
+            )}
 
             <div className="pt-2 border-t border-[#162752] flex items-center justify-between text-[11px] text-blue-300/70">
               <span>Buzzer Position: Left (P1)</span>
@@ -164,21 +253,77 @@ export const OnlineRoomLobby: React.FC<OnlineRoomLobbyProps> = ({
                     </span>
                   )}
                 </div>
-                <span className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-400">
-                  <span className="w-2 h-2 rounded-full bg-emerald-400" />
-                  Participant Joined!
-                </span>
+                <div className="flex items-center gap-2">
+                  {room.guest.id === myPlayerId && !isEditingMyName && (
+                    <button
+                      id="edit-guest-name-btn"
+                      onClick={handleStartEdit}
+                      className="px-2 py-0.5 rounded text-[11px] font-semibold bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 flex items-center gap-1 transition-all"
+                      title="Edit Contestant Name"
+                    >
+                      <Edit3 className="w-3 h-3" /> Edit Name
+                    </button>
+                  )}
+                  <span className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-400">
+                    <span className="w-2 h-2 rounded-full bg-emerald-400" />
+                    Participant Joined!
+                  </span>
+                </div>
               </div>
 
-              <div className="space-y-1">
-                <div className="text-lg font-black text-white truncate flex items-center gap-2">
-                  {room.guest.name}
-                  <Sparkles className="w-4 h-4 text-emerald-400" />
+              {room.guest.id === myPlayerId && isEditingMyName ? (
+                <div className="space-y-2 p-3 rounded-xl bg-[#091533] border border-emerald-500/50">
+                  <div>
+                    <label className="text-[10px] text-emerald-300 font-bold block mb-1">Edit Your Contestant Name</label>
+                    <input
+                      type="text"
+                      value={editName}
+                      onChange={(e) => setEditName(e.target.value)}
+                      className="w-full px-2.5 py-1.5 rounded-lg bg-[#070e24] border border-emerald-500 text-white text-xs font-bold focus:outline-none focus:ring-1 focus:ring-emerald-400"
+                      placeholder="Enter your name"
+                      autoFocus
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-emerald-300 font-bold block mb-1">Edit University</label>
+                    <select
+                      value={editUni}
+                      onChange={(e) => setEditUni(e.target.value)}
+                      className="w-full px-2 py-1.5 rounded-lg bg-[#070e24] border border-[#1f3875] text-white text-xs focus:outline-none focus:border-emerald-400"
+                    >
+                      {NIGERIAN_UNIVERSITIES.map((u) => (
+                        <option key={u} value={u}>{u}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="flex items-center justify-end gap-2 pt-1">
+                    <button
+                      onClick={() => setIsEditingMyName(false)}
+                      className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold flex items-center gap-1"
+                    >
+                      <X className="w-3 h-3" /> Cancel
+                    </button>
+                    <button
+                      id="save-guest-name-btn"
+                      onClick={handleSaveEdit}
+                      disabled={isSavingName}
+                      className="px-3 py-1 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-black flex items-center gap-1 shadow"
+                    >
+                      <Check className="w-3 h-3" /> {isSavingName ? 'Saving...' : 'Save Changes'}
+                    </button>
+                  </div>
                 </div>
-                <div className="text-xs text-emerald-200/80 font-medium truncate">
-                  🏛️ {room.guest.university}
+              ) : (
+                <div className="space-y-1">
+                  <div className="text-lg font-black text-white truncate flex items-center gap-2">
+                    {room.guest.name}
+                    <Sparkles className="w-4 h-4 text-emerald-400" />
+                  </div>
+                  <div className="text-xs text-emerald-200/80 font-medium truncate">
+                    🏛️ {room.guest.university}
+                  </div>
                 </div>
-              </div>
+              )}
 
               <div className="pt-2 border-t border-[#123832] flex items-center justify-between text-[11px] text-emerald-300/80">
                 <span>Buzzer Position: Right (P2)</span>
