@@ -1,4 +1,9 @@
-import { Question } from '../types';
+import { Question, LeaderboardEntry } from '../types';
+import { duelSocket } from './duelSocketClient';
+
+export { duelSocket };
+export const getSyncedServerTime = () => duelSocket.getSyncedServerTime();
+export const subscribeToLeaderboard = (callback: (leaderboard: LeaderboardEntry[]) => void) => duelSocket.subscribeToLeaderboard(callback);
 
 export interface DuelPlayer {
   id: string;
@@ -22,6 +27,9 @@ export interface DuelRoom {
   section: string;
   currentQIndex: number;
   roundStartTime?: number;
+  roundEndsAt?: number;
+  transitionEndsAt?: number;
+  isTransitioning?: boolean;
   winner?: string;
   lastRoundResult?: {
     qIndex: number;
@@ -31,6 +39,7 @@ export interface DuelRoom {
     optionIndex: number;
     correctIndex?: number;
     timestamp: number;
+    pointsEarned?: number;
     status: 'answered_correct' | 'answered_incorrect' | 'timeout' | string;
   };
 }
@@ -371,6 +380,12 @@ export const getDuelRoom = fetchDuelRoom;
 export async function startDuelMatch(roomId: string, playerId: string): Promise<DuelRoom | null> {
   const normalizedId = normalizeRoomCode(roomId);
 
+  duelSocket.send({
+    type: 'START_MATCH',
+    roomId: normalizedId,
+    playerId
+  });
+
   try {
     const res = await fetch('/api/duel/start', {
       method: 'POST',
@@ -408,6 +423,15 @@ export async function submitDuelAnswer(params: {
   clientTimestamp?: number;
 }): Promise<DuelRoom | null> {
   const normalizedId = normalizeRoomCode(params.roomId);
+
+  duelSocket.send({
+    type: 'SUBMIT_ANSWER',
+    roomId: normalizedId,
+    playerId: params.playerId,
+    qIndex: params.qIndex,
+    optionIndex: params.optionIndex,
+    clientTimestamp: params.clientTimestamp || Date.now()
+  });
 
   try {
     const res = await fetch('/api/duel/answer', {
@@ -569,6 +593,12 @@ export async function advanceDuelRound(roomId: string, qIndex: number): Promise<
 export async function requestDuelRematch(roomId: string, newQuestions: Question[]): Promise<DuelRoom | null> {
   const normalizedId = normalizeRoomCode(roomId);
 
+  duelSocket.send({
+    type: 'REMATCH',
+    roomId: normalizedId,
+    newQuestions
+  });
+
   try {
     const res = await fetch('/api/duel/rematch', {
       method: 'POST',
@@ -605,6 +635,12 @@ export async function requestDuelRematch(roomId: string, newQuestions: Question[
 
 export async function leaveDuelRoom(roomId: string, playerId: string): Promise<void> {
   const normalizedId = normalizeRoomCode(roomId);
+  duelSocket.send({
+    type: 'LEAVE_ROOM',
+    roomId: normalizedId,
+    playerId
+  });
+
   try {
     await fetch('/api/duel/leave', {
       method: 'POST',
@@ -616,16 +652,23 @@ export async function leaveDuelRoom(roomId: string, playerId: string): Promise<v
   }
 }
 
-// Live Room Subscription (Combining BroadcastChannel instant updates + 400ms polling)
+// Live Room Subscription (Combining WebSocket server-push + BroadcastChannel + fallback storage)
 export function subscribeToDuelRoom(
   roomId: string,
   playerId: string,
-  onUpdate: (room: DuelRoom) => void
+  onUpdate: (room: DuelRoom) => void,
+  metadata?: { name?: string; university?: string }
 ): () => void {
   const normalizedId = normalizeRoomCode(roomId);
   let isSubscribed = true;
 
-  // 1. BroadcastChannel listener for zero-latency multi-tab updates
+  // 1. WebSocket live subscription (primary real-time channel)
+  const unsubSocket = duelSocket.subscribeToRoom(normalizedId, playerId, (room) => {
+    if (!isSubscribed) return;
+    onUpdate(room);
+  }, metadata);
+
+  // 2. BroadcastChannel listener for zero-latency same-browser multi-tab updates
   const handleBroadcast = (event: MessageEvent) => {
     if (!isSubscribed) return;
     if (event.data?.type === 'ROOM_UPDATE' && event.data.room?.id === normalizedId) {
@@ -637,7 +680,7 @@ export function subscribeToDuelRoom(
     broadcastChannel.addEventListener('message', handleBroadcast);
   }
 
-  // 2. Storage event listener (backup for same-origin tabs)
+  // 3. Storage event listener (backup for same-origin tabs)
   const handleStorage = (e: StorageEvent) => {
     if (!isSubscribed) return;
     if (e.key === `uduel_room_${normalizedId}` && e.newValue) {
@@ -651,23 +694,14 @@ export function subscribeToDuelRoom(
   };
   window.addEventListener('storage', handleStorage);
 
-  // 3. Regular fast polling interval for network/cross-device sync
-  const pollInterval = setInterval(async () => {
-    if (!isSubscribed) return;
-    const freshRoom = await fetchDuelRoom(normalizedId, playerId);
-    if (freshRoom && isSubscribed) {
-      onUpdate(freshRoom);
-    }
-  }, 400);
-
-  // Initial fetch
+  // 4. Initial fetch to ensure instant display
   fetchDuelRoom(normalizedId, playerId).then((room) => {
     if (room && isSubscribed) onUpdate(room);
   });
 
   return () => {
     isSubscribed = false;
-    clearInterval(pollInterval);
+    unsubSocket();
     if (broadcastChannel) {
       broadcastChannel.removeEventListener('message', handleBroadcast);
     }

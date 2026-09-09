@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { LeaderboardEntry, QuizHistoryItem } from '../types';
 import { getStoredLeaderboard, getStoredStats, getStoredProfile, saveStoredLeaderboard } from '../utils/storage';
-import { fetchRealLeaderboard } from '../utils/duelRoomService';
+import { fetchRealLeaderboard, subscribeToLeaderboard } from '../utils/duelRoomService';
 import {
   Trophy,
   Medal,
@@ -16,7 +16,8 @@ import {
   ArrowUpRight,
   RefreshCw,
   Zap,
-  Users
+  Users,
+  Radio
 } from 'lucide-react';
 
 interface GlobalLeaderboardProps {
@@ -30,6 +31,7 @@ export const GlobalLeaderboard: React.FC<GlobalLeaderboardProps> = ({ onStartPra
   const [historyItems, setHistoryItems] = useState<QuizHistoryItem[]>([]);
   const [activeTab, setActiveTab] = useState<'leaderboard' | 'history'>('leaderboard');
   const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [lastLiveSync, setLastLiveSync] = useState<Date | null>(null);
 
   const loadLeaderboardData = async () => {
     setIsLoading(true);
@@ -59,6 +61,17 @@ export const GlobalLeaderboard: React.FC<GlobalLeaderboardProps> = ({ onStartPra
   useEffect(() => {
     loadLeaderboardData();
     setHistoryItems(getStoredStats().history || []);
+
+    // Real-time live leaderboard push subscription via WebSocket
+    const unsubscribe = subscribeToLeaderboard((updatedEntries) => {
+      if (Array.isArray(updatedEntries) && updatedEntries.length > 0) {
+        setLeaderboard(updatedEntries);
+        saveStoredLeaderboard(updatedEntries);
+        setLastLiveSync(new Date());
+      }
+    });
+
+    return () => unsubscribe();
   }, []);
 
   const profile = getStoredProfile();
@@ -97,9 +110,23 @@ export const GlobalLeaderboard: React.FC<GlobalLeaderboardProps> = ({ onStartPra
       <div className="relative overflow-hidden rounded-2xl bg-gradient-to-r from-[#0c1a40] via-[#0f2459] to-[#091538] border border-[#1e346f] p-6 sm:p-8 shadow-2xl">
         <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-6">
           <div className="space-y-2">
-            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-amber-500/20 text-amber-300 text-xs font-semibold border border-amber-500/30">
-              <Trophy className="w-3.5 h-3.5 text-amber-400" />
-              GLOBAL UNIVERSITY DUEL LEAGUE
+            <div className="flex items-center gap-2 flex-wrap">
+              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-amber-500/20 text-amber-300 text-xs font-semibold border border-amber-500/30">
+                <Trophy className="w-3.5 h-3.5 text-amber-400" />
+                GLOBAL UNIVERSITY DUEL LEAGUE
+              </div>
+              <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/15 text-emerald-300 text-xs font-medium border border-emerald-500/30">
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-400"></span>
+                </span>
+                <span>Real-Time Broadcast Active</span>
+                {lastLiveSync && (
+                  <span className="text-[10px] text-emerald-300/70 font-mono ml-0.5">
+                    ({lastLiveSync.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })})
+                  </span>
+                )}
+              </div>
             </div>
             <h1 className="text-2xl sm:text-3xl font-black text-white">
               Contestant <span className="text-cyan-400">Leaderboard</span>

@@ -3,8 +3,8 @@ import { Question } from '../types';
 import {
   DuelRoom,
   submitDuelAnswer,
-  advanceDuelRound,
-  requestDuelRematch
+  requestDuelRematch,
+  getSyncedServerTime
 } from '../utils/duelRoomService';
 import { duelSound } from '../utils/audio';
 import confetti from 'canvas-confetti';
@@ -40,159 +40,118 @@ export const OnlineRoomArena: React.FC<OnlineRoomArenaProps> = ({
   onExitDuel
 }) => {
   const questions = room.questions;
-  const [displayedQIndex, setDisplayedQIndex] = useState<number>(room.currentQIndex);
-  const [isRoundTransitioning, setIsRoundTransitioning] = useState<boolean>(false);
-  const [transitionMessage, setTransitionMessage] = useState<string>('');
+  const currentQIndex = room.currentQIndex;
+  const isRoundTransitioning = Boolean(room.isTransitioning);
   const [localSelectedOption, setLocalSelectedOption] = useState<number | null>(null);
-  const [countdown, setCountdown] = useState<number>(12);
+  const [countdown, setCountdown] = useState<number>(15);
   const [rematchLoading, setRematchLoading] = useState<boolean>(false);
 
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
-  const transitionTimerRef = useRef<NodeJS.Timeout | null>(null);
-
-  const currentQ: Question | undefined = questions[displayedQIndex];
+  const lastSeenRoundResultRef = useRef<number | null>(null);
+  const currentQ: Question | undefined = questions[currentQIndex];
 
   const myPlayer = room.host.id === myPlayerId ? room.host : room.guest;
   const opponentPlayer = room.host.id === myPlayerId ? room.guest : room.host;
 
-  // React to remote room changes (when ANYONE picks an answer, reveal correct option and advance both ends)
+  // Clear local selected option when the question advances
   useEffect(() => {
-    if (room.status !== 'in_progress') return;
+    setLocalSelectedOption(null);
+  }, [currentQIndex]);
 
-    if (room.currentQIndex > displayedQIndex) {
-      if (!isRoundTransitioning) {
-        if (timerRef.current) clearInterval(timerRef.current);
-        setIsRoundTransitioning(true);
+  // Synchronized countdown computed from server-authoritative roundEndsAt
+  useEffect(() => {
+    if (room.status !== 'in_progress' || isRoundTransitioning) {
+      return;
+    }
 
-        const lastRes = room.lastRoundResult;
-        const answeredByOpponent =
-          lastRes &&
-          lastRes.qIndex === displayedQIndex &&
-          lastRes.answeredBy !== myPlayerId;
+    const updateTimer = () => {
+      if (!room.roundEndsAt) {
+        setCountdown(15);
+        return;
+      }
+      const now = getSyncedServerTime();
+      const remainingMs = Math.max(0, room.roundEndsAt - now);
+      const secs = Math.ceil(remainingMs / 1000);
+      setCountdown(secs);
 
-        if (answeredByOpponent) {
-          const oppName = opponentPlayer?.name || lastRes?.answeredByName || 'Opponent';
-          const optLetter = String.fromCharCode(65 + (lastRes?.optionIndex ?? 0));
-          const correctLetter = String.fromCharCode(65 + (lastRes?.correctIndex ?? currentQ?.correctIndex ?? 0));
-          if (lastRes?.isCorrect) {
-            duelSound.playBuzzer();
-            setTransitionMessage(`⚡ ${oppName} picked Option ${optLetter} — Correct! (+10 pts). Advancing both players...`);
-          } else {
-            duelSound.playWrong();
-            setTransitionMessage(`❌ ${oppName} picked Option ${optLetter} — Incorrect (0 pts). Correct answer was Option ${correctLetter}. Advancing both players...`);
-          }
-        } else {
-          setTransitionMessage('⚡ Round concluded! Advancing both players...');
-        }
+      if (secs <= 3 && secs > 0) {
+        duelSound.playTick();
+      }
+    };
 
-        if (transitionTimerRef.current) clearTimeout(transitionTimerRef.current);
-        transitionTimerRef.current = setTimeout(() => {
-          setDisplayedQIndex(room.currentQIndex);
-          setIsRoundTransitioning(false);
-          setLocalSelectedOption(null);
-          setTransitionMessage('');
-        }, 1400);
+    updateTimer();
+    const interval = setInterval(updateTimer, 200);
+    return () => clearInterval(interval);
+  }, [room.roundEndsAt, isRoundTransitioning, room.status]);
+
+  // Audio cues when opponent triggers a reveal or round timeout
+  useEffect(() => {
+    if (!room.lastRoundResult) return;
+    const res = room.lastRoundResult;
+    if (lastSeenRoundResultRef.current === res.timestamp) return;
+    lastSeenRoundResultRef.current = res.timestamp;
+
+    if (res.status === 'timeout') {
+      duelSound.playBuzzer();
+    } else if (res.answeredBy !== myPlayerId) {
+      if (res.isCorrect) {
+        duelSound.playBuzzer();
+      } else {
+        duelSound.playWrong();
       }
     }
-  }, [room.currentQIndex, room.lastRoundResult, displayedQIndex, isRoundTransitioning, myPlayerId, opponentPlayer?.name, currentQ?.correctIndex]);
+  }, [room.lastRoundResult, myPlayerId]);
 
-  // Reset countdown & local state when question changes
-  useEffect(() => {
-    if (room.status !== 'in_progress' || !currentQ) return;
+  // Format transition banner message
+  const getTransitionMessage = () => {
+    const lastRes = room.lastRoundResult;
+    if (!lastRes) return 'Round concluded! Advancing both players...';
 
-    setCountdown(12);
-    setLocalSelectedOption(null);
-    setIsRoundTransitioning(false);
-    setTransitionMessage('');
+    const correctLetter = String.fromCharCode(65 + (lastRes.correctIndex ?? currentQ?.correctIndex ?? 0));
+    const optLetter = String.fromCharCode(65 + (lastRes.optionIndex ?? 0));
+    const points = lastRes.pointsEarned || 10;
 
-    if (timerRef.current) clearInterval(timerRef.current);
-    if (transitionTimerRef.current) clearTimeout(transitionTimerRef.current);
+    if (lastRes.status === 'timeout') {
+      return `⏱️ Time's up! Correct answer was Option ${correctLetter}. Advancing together...`;
+    }
 
-    timerRef.current = setInterval(() => {
-      setCountdown((prev) => {
-        if (prev <= 1) {
-          clearInterval(timerRef.current as NodeJS.Timeout);
-          handleTimeExpire();
-          return 0;
-        }
-        if (prev <= 4) {
-          duelSound.playTick();
-        }
-        return prev - 1;
-      });
-    }, 1000);
+    const isMe = lastRes.answeredBy === myPlayerId;
+    const actorName = isMe ? 'You' : opponentPlayer?.name || lastRes.answeredByName || 'Opponent';
 
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-      if (transitionTimerRef.current) clearTimeout(transitionTimerRef.current);
-    };
-  }, [displayedQIndex, room.status]);
+    if (lastRes.isCorrect) {
+      return `⚡ ${actorName} picked Option ${optLetter} — Correct! (+${points} pts). Advancing together...`;
+    } else {
+      return `❌ ${actorName} picked Option ${optLetter} — Incorrect (0 pts). Correct answer was Option ${correctLetter}. Advancing together...`;
+    }
+  };
 
-  // Handle player picking an answer: whether correct or not, display correct option and proceed to the next question at both ends!
+  // Handle player selecting an option
   const handleSelectOption = async (optionIdx: number) => {
     if (isRoundTransitioning || !currentQ || room.status !== 'in_progress') return;
-    if (displayedQIndex !== room.currentQIndex) return;
-    if (localSelectedOption !== null) return; // already selected for this question
+    if (localSelectedOption !== null) return;
 
     setLocalSelectedOption(optionIdx);
     const clientTimestamp = Date.now();
     const isCorrect = optionIdx === currentQ.correctIndex;
-    const timeSpent = 12 - countdown;
-    const optLetter = String.fromCharCode(65 + optionIdx);
-    const correctLetter = String.fromCharCode(65 + currentQ.correctIndex);
-
-    if (timerRef.current) clearInterval(timerRef.current);
-    setIsRoundTransitioning(true);
+    const timeSpent = Math.max(1, 15 - countdown);
 
     if (isCorrect) {
       duelSound.playCorrect();
-      setTransitionMessage(`⚡ You picked Option ${optLetter} — Correct! (+10 pts). Advancing both players...`);
     } else {
       duelSound.playWrong();
-      setTransitionMessage(`❌ You picked Option ${optLetter} — Incorrect (0 pts). Correct answer was Option ${correctLetter}. Advancing both players...`);
     }
 
-    const updated = await submitDuelAnswer({
+    await submitDuelAnswer({
       roomId: room.id,
       playerId: myPlayerId,
-      qIndex: displayedQIndex,
+      qIndex: currentQIndex,
       optionIndex: optionIdx,
       isCorrect,
       timeSpent,
       clientTimestamp
     });
-
-    if (transitionTimerRef.current) clearTimeout(transitionTimerRef.current);
-    transitionTimerRef.current = setTimeout(() => {
-      const nextIndex = updated ? updated.currentQIndex : displayedQIndex + 1;
-      setDisplayedQIndex(nextIndex);
-      setIsRoundTransitioning(false);
-      setLocalSelectedOption(null);
-      setTransitionMessage('');
-    }, 1400);
   };
 
-  const handleTimeExpire = async () => {
-    if (isRoundTransitioning || !currentQ || room.status !== 'in_progress') return;
-    if (timerRef.current) clearInterval(timerRef.current);
-
-    setIsRoundTransitioning(true);
-    duelSound.playBuzzer();
-    setTransitionMessage('⏱️ Time expired! Moving to next question...');
-
-    const updated = await advanceDuelRound(room.id, displayedQIndex);
-
-    if (transitionTimerRef.current) clearTimeout(transitionTimerRef.current);
-    transitionTimerRef.current = setTimeout(() => {
-      const nextIndex = updated ? updated.currentQIndex : displayedQIndex + 1;
-      setDisplayedQIndex(nextIndex);
-      setIsRoundTransitioning(false);
-      setLocalSelectedOption(null);
-      setTransitionMessage('');
-    }, 850);
-  };
-
-  // Keyboard hotkeys for answering
+  // Keyboard hotkeys for instant answering
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (isRoundTransitioning || room.status !== 'in_progress') return;
@@ -204,12 +163,7 @@ export const OnlineRoomArena: React.FC<OnlineRoomArenaProps> = ({
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isRoundTransitioning, room.status, displayedQIndex, countdown]);
-
-  // Helper function for dependency
-  function isRoundTransitionIdOrStatus(st: string) {
-    return st;
-  }
+  }, [isRoundTransitioning, room.status, currentQIndex, countdown]);
 
   // Trigger celebration on match finished and record real contestant scores to leaderboard
   useEffect(() => {
@@ -258,7 +212,7 @@ export const OnlineRoomArena: React.FC<OnlineRoomArenaProps> = ({
   };
 
   // ---------------- MATCH FINISHED VIEW ----------------
-  if (room.status === 'finished' && !isRoundTransitioning) {
+  if (room.status === 'finished') {
     const hostScore = room.host.score;
     const guestScore = room.guest ? room.guest.score : 0;
     const isTie = hostScore === guestScore;
@@ -422,7 +376,7 @@ export const OnlineRoomArena: React.FC<OnlineRoomArenaProps> = ({
           {/* Center Round & Timer */}
           <div className="text-center flex flex-col items-center flex-shrink-0">
             <span className="text-[10px] font-bold uppercase tracking-wider text-blue-300">
-              Round {displayedQIndex + 1} of {questions.length}
+              Round {currentQIndex + 1} of {questions.length}
             </span>
 
             {/* Countdown Badge */}
@@ -442,7 +396,7 @@ export const OnlineRoomArena: React.FC<OnlineRoomArenaProps> = ({
           <div className="flex items-center gap-3 justify-end max-w-[40%] text-right">
             <div className="truncate">
               <div className="text-xs font-bold text-white truncate">
-                {opponentPlayer?.name}
+                {opponentPlayer?.name || 'Waiting...'}
               </div>
               <div className="text-[10px] text-blue-300/70 truncate">{opponentPlayer?.university}</div>
               <div className="text-sm font-black text-amber-400 mt-0.5">
@@ -455,18 +409,18 @@ export const OnlineRoomArena: React.FC<OnlineRoomArenaProps> = ({
           </div>
         </div>
 
-        {/* Live Status Strip - First Answer Advances Mode */}
+        {/* Live Status Strip */}
         <div className="pt-2 border-t border-[#162752] flex items-center justify-between text-[11px]">
           <div className="flex items-center gap-1.5">
             {isRoundTransitioning ? (
               <span className="text-amber-400 font-bold flex items-center gap-1.5 animate-pulse">
                 <Zap className="w-3.5 h-3.5 fill-amber-400 text-amber-400" />
-                {transitionMessage || 'Round concluded! Advancing both players...'}
+                {getTransitionMessage()}
               </span>
             ) : (
               <span className="text-cyan-300/90 font-semibold flex items-center gap-1.5">
                 <Zap className="w-3.5 h-3.5 text-amber-400" />
-                Connected Duel: When anyone picks an answer, correct option is displayed and both advance together!
+                Real-Time Synchronized Duel: Answers and countdowns match simultaneously on both screens.
               </span>
             )}
           </div>
@@ -508,7 +462,7 @@ export const OnlineRoomArena: React.FC<OnlineRoomArenaProps> = ({
             const letter = String.fromCharCode(65 + idx);
             const isMyPick = localSelectedOption === idx;
             const isOpponentPick =
-              room.lastRoundResult?.qIndex === displayedQIndex &&
+              room.lastRoundResult?.qIndex === currentQIndex &&
               room.lastRoundResult?.answeredBy !== myPlayerId &&
               room.lastRoundResult?.optionIndex === idx;
             const isCorrect = idx === currentQ.correctIndex;
@@ -517,7 +471,7 @@ export const OnlineRoomArena: React.FC<OnlineRoomArenaProps> = ({
 
             if (isRoundTransitioning) {
               if (isCorrect) {
-                // ALWAYS highlight correct option prominently with emerald ring and glowing border!
+                // Highlight correct option prominently with emerald ring and glowing border
                 btnStyle = 'bg-emerald-950/90 border-emerald-400 text-emerald-100 ring-2 ring-emerald-400 shadow-lg shadow-emerald-500/30 font-semibold';
               } else if (isMyPick || isOpponentPick) {
                 btnStyle = 'bg-rose-950/90 border-rose-500 text-rose-200 ring-2 ring-rose-500/60';
@@ -531,9 +485,9 @@ export const OnlineRoomArena: React.FC<OnlineRoomArenaProps> = ({
                 key={idx}
                 id={`duel-option-${idx}`}
                 onClick={() => handleSelectOption(idx)}
-                disabled={isRoundTransitioning}
+                disabled={isRoundTransitioning || localSelectedOption !== null}
                 className={`p-3.5 rounded-xl border text-left flex items-center justify-between gap-3 transition-all ${
-                  isRoundTransitioning ? 'cursor-default' : 'cursor-pointer'
+                  isRoundTransitioning || localSelectedOption !== null ? 'cursor-default' : 'cursor-pointer'
                 } ${btnStyle}`}
               >
                 <div className="flex items-center gap-3">
@@ -591,7 +545,7 @@ export const OnlineRoomArena: React.FC<OnlineRoomArenaProps> = ({
             <div className="flex items-center justify-between text-xs">
               <div className="flex items-center gap-2 text-cyan-200 font-bold">
                 <Zap className="w-4 h-4 text-amber-400 fill-amber-400 animate-bounce" />
-                <span>{transitionMessage || 'Round concluded! Advancing...'}</span>
+                <span>{getTransitionMessage()}</span>
               </div>
               <span className="text-[10px] font-mono text-cyan-400/90 uppercase tracking-wider font-bold">
                 Next Question Incoming

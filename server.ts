@@ -1,6 +1,8 @@
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
+import http from 'http';
+import { WebSocketServer, WebSocket } from 'ws';
 import { createServer as createViteServer } from 'vite';
 
 export interface DuelPlayer {
@@ -25,6 +27,9 @@ export interface DuelRoom {
   section: string;
   currentQIndex: number;
   roundStartTime?: number;
+  roundEndsAt?: number;
+  transitionEndsAt?: number;
+  isTransitioning?: boolean;
   winner?: string;
   lastRoundResult?: {
     qIndex: number;
@@ -34,6 +39,7 @@ export interface DuelRoom {
     optionIndex: number;
     correctIndex: number;
     timestamp: number;
+    pointsEarned?: number;
     status: 'answered_correct' | 'answered_incorrect' | 'timeout' | string;
   };
 }
@@ -63,6 +69,69 @@ const rooms: Map<string, DuelRoom> = new Map();
 
 // Real Leaderboard: real contestants who have earned points
 const realLeaderboard: Map<string, RealLeaderboardEntry> = new Map();
+
+// WebSocket tracking collections
+const roomSockets: Map<string, Set<WebSocket>> = new Map();
+const leaderboardSubscribers: Set<WebSocket> = new Set();
+const socketInfoMap: Map<WebSocket, { roomId?: string; playerId?: string; isLeaderboardSub?: boolean }> = new Map();
+const roomTimers: Map<string, NodeJS.Timeout> = new Map();
+
+function clearRoomTimer(roomId: string) {
+  const t = roomTimers.get(roomId);
+  if (t) {
+    clearTimeout(t);
+    roomTimers.delete(roomId);
+  }
+}
+
+function broadcastToRoom(roomId: string, message: any) {
+  const normId = normalizeRoomCode(roomId);
+  const sockets = roomSockets.get(normId);
+  if (!sockets || sockets.size === 0) return;
+
+  const payload = JSON.stringify(message);
+  for (const ws of sockets) {
+    if (ws.readyState === WebSocket.OPEN) {
+      try {
+        ws.send(payload);
+      } catch (err) {
+        console.warn(`Failed to send to socket in room ${normId}:`, err);
+      }
+    }
+  }
+}
+
+let leaderboardDebounceTimer: NodeJS.Timeout | null = null;
+function broadcastLeaderboardUpdate(immediate: boolean = false) {
+  const doBroadcast = () => {
+    leaderboardDebounceTimer = null;
+    if (leaderboardSubscribers.size === 0) return;
+    const sorted = getSortedLeaderboard();
+    const payload = JSON.stringify({
+      type: 'LEADERBOARD_UPDATED',
+      leaderboard: sorted,
+      timestamp: Date.now()
+    });
+
+    for (const ws of leaderboardSubscribers) {
+      if (ws.readyState === WebSocket.OPEN) {
+        try {
+          ws.send(payload);
+        } catch {}
+      }
+    }
+  };
+
+  if (immediate) {
+    if (leaderboardDebounceTimer) {
+      clearTimeout(leaderboardDebounceTimer);
+      leaderboardDebounceTimer = null;
+    }
+    doBroadcast();
+  } else if (!leaderboardDebounceTimer) {
+    leaderboardDebounceTimer = setTimeout(doBroadcast, 600);
+  }
+}
 
 function loadRoomsFromDisk() {
   try {
@@ -239,6 +308,7 @@ function normalizeRoomCode(code: string): string {
 
 function finishRoomMatch(room: DuelRoom) {
   room.status = 'finished';
+  clearRoomTimer(room.id);
   const p1Score = room.host.score;
   const p2Score = room.guest ? room.guest.score : 0;
   const hostWon = p1Score > p2Score;
@@ -271,12 +341,195 @@ function finishRoomMatch(room: DuelRoom) {
       bestSection: room.section
     });
   }
+
+  // Push immediate live leaderboard broadcast to all connected clients
+  broadcastLeaderboardUpdate(true);
+}
+
+const QUESTION_ROUND_DURATION_MS = 15000;
+const ROUND_REVEAL_TRANSITION_MS = 1600;
+
+function startRoomMatch(room: DuelRoom): DuelRoom {
+  clearRoomTimer(room.id);
+  room.status = 'in_progress';
+  room.currentQIndex = 0;
+  room.isTransitioning = false;
+  room.transitionEndsAt = undefined;
+  room.winner = undefined;
+  room.lastRoundResult = undefined;
+  room.host.score = 0;
+  room.host.answers = {};
+  if (room.guest) {
+    room.guest.score = 0;
+    room.guest.answers = {};
+  }
+  room.roundStartTime = Date.now();
+  room.roundEndsAt = Date.now() + QUESTION_ROUND_DURATION_MS;
+  room.lastActivity = Date.now();
+
+  rooms.set(room.id, room);
+  saveRoomsToDisk();
+
+  broadcastToRoom(room.id, { type: 'ROUND_STARTED', room });
+  scheduleRoundTimeout(room.id, 0);
+  return room;
+}
+
+function scheduleRoundTimeout(roomId: string, qIndex: number) {
+  clearRoomTimer(roomId);
+  const timer = setTimeout(() => {
+    handleServerRoundTimeout(roomId, qIndex);
+  }, QUESTION_ROUND_DURATION_MS + 250);
+  roomTimers.set(roomId, timer);
+}
+
+function handleServerRoundTimeout(roomId: string, qIndex: number) {
+  const normId = normalizeRoomCode(roomId);
+  const room = rooms.get(normId);
+  if (!room || room.status !== 'in_progress') return;
+  if (room.currentQIndex !== qIndex || room.isTransitioning) return;
+
+  const currentQ = room.questions[qIndex];
+  const correctIndex = currentQ ? currentQ.correctIndex : 0;
+
+  room.isTransitioning = true;
+  room.transitionEndsAt = Date.now() + ROUND_REVEAL_TRANSITION_MS;
+  room.lastRoundResult = {
+    qIndex,
+    answeredBy: 'timeout',
+    answeredByName: 'Clock Expired',
+    isCorrect: false,
+    optionIndex: -1,
+    correctIndex,
+    timestamp: Date.now(),
+    pointsEarned: 0,
+    status: 'timeout'
+  };
+  room.lastActivity = Date.now();
+  rooms.set(normId, room);
+  saveRoomsToDisk();
+
+  broadcastToRoom(normId, { type: 'ROUND_REVEAL', room });
+  scheduleAdvanceRound(normId, qIndex);
+}
+
+function scheduleAdvanceRound(roomId: string, prevQIndex: number) {
+  clearRoomTimer(roomId);
+  const timer = setTimeout(() => {
+    advanceToNextRoundOrFinish(roomId, prevQIndex);
+  }, ROUND_REVEAL_TRANSITION_MS);
+  roomTimers.set(roomId, timer);
+}
+
+function advanceToNextRoundOrFinish(roomId: string, prevQIndex: number): DuelRoom | null {
+  clearRoomTimer(roomId);
+  const normId = normalizeRoomCode(roomId);
+  const room = rooms.get(normId);
+  if (!room || room.status !== 'in_progress') return null;
+
+  if (prevQIndex + 1 < room.questions.length) {
+    room.currentQIndex = prevQIndex + 1;
+    room.isTransitioning = false;
+    room.transitionEndsAt = undefined;
+    room.roundStartTime = Date.now();
+    room.roundEndsAt = Date.now() + QUESTION_ROUND_DURATION_MS;
+    room.lastActivity = Date.now();
+    rooms.set(normId, room);
+    saveRoomsToDisk();
+
+    broadcastToRoom(normId, { type: 'ROUND_STARTED', room });
+    scheduleRoundTimeout(normId, room.currentQIndex);
+    return room;
+  } else {
+    finishRoomMatch(room);
+    room.isTransitioning = false;
+    room.transitionEndsAt = undefined;
+    room.lastActivity = Date.now();
+    rooms.set(normId, room);
+    saveRoomsToDisk();
+
+    broadcastToRoom(normId, { type: 'MATCH_FINISHED', room });
+    return room;
+  }
+}
+
+function handlePlayerAnswerSubmission(params: {
+  roomId: string;
+  playerId: string;
+  qIndex: number;
+  optionIndex: number;
+  clientTimestamp?: number;
+}): { success: boolean; room?: DuelRoom; error?: string; alreadyAnswered?: boolean } {
+  const normId = normalizeRoomCode(params.roomId);
+  const room = rooms.get(normId);
+  if (!room) return { success: false, error: 'Room not found' };
+
+  const target = room.host.id === params.playerId ? room.host : room.guest?.id === params.playerId ? room.guest : null;
+  const opponent = room.host.id === params.playerId ? room.guest : room.host;
+  if (!target) return { success: false, error: 'Player not recognized in this room' };
+
+  if (room.currentQIndex > params.qIndex || room.status === 'finished') {
+    return { success: true, room, alreadyAnswered: true };
+  }
+  if (room.isTransitioning) {
+    return { success: true, room, alreadyAnswered: true };
+  }
+  if (target.answers[params.qIndex] !== undefined) {
+    return { success: true, room, alreadyAnswered: true };
+  }
+  if (opponent?.answers[params.qIndex] !== undefined) {
+    return { success: true, room, alreadyAnswered: true };
+  }
+
+  // Clear timeout timer because an answer was submitted
+  clearRoomTimer(normId);
+
+  const answerTime = params.clientTimestamp || Date.now();
+  const currentQ = room.questions[params.qIndex];
+  const correctIndex = currentQ ? currentQ.correctIndex : 0;
+  const isActuallyCorrect = params.optionIndex === correctIndex;
+
+  const remainingMs = Math.max(0, (room.roundEndsAt || Date.now()) - Date.now());
+  const speedBonus = isActuallyCorrect ? Math.min(5, Math.floor(remainingMs / 2500)) : 0;
+  const pointsEarned = isActuallyCorrect ? (10 + speedBonus) : 0;
+
+  target.score += pointsEarned;
+  target.answers[params.qIndex] = {
+    option: params.optionIndex,
+    isCorrect: isActuallyCorrect,
+    timeSpent: Math.round((QUESTION_ROUND_DURATION_MS - remainingMs) / 1000),
+    timestamp: answerTime
+  };
+
+  room.lastRoundResult = {
+    qIndex: params.qIndex,
+    answeredBy: target.id,
+    answeredByName: target.name,
+    isCorrect: isActuallyCorrect,
+    optionIndex: params.optionIndex,
+    correctIndex,
+    timestamp: answerTime,
+    pointsEarned,
+    status: isActuallyCorrect ? 'answered_correct' : 'answered_incorrect'
+  };
+
+  room.isTransitioning = true;
+  room.transitionEndsAt = Date.now() + ROUND_REVEAL_TRANSITION_MS;
+  room.lastActivity = Date.now();
+  rooms.set(normId, room);
+  saveRoomsToDisk();
+
+  broadcastToRoom(normId, { type: 'ROUND_REVEAL', room });
+  scheduleAdvanceRound(normId, params.qIndex);
+
+  return { success: true, room };
 }
 
 setInterval(() => {
   const now = Date.now();
   for (const [id, room] of rooms.entries()) {
     if (now - room.lastActivity > 2 * 60 * 60 * 1000) {
+      clearRoomTimer(id);
       rooms.delete(id);
     }
   }
@@ -291,7 +544,12 @@ async function startServer() {
 
   // API Health Check
   app.get('/api/health', (req, res) => {
-    res.json({ status: 'ok', activeRooms: rooms.size });
+    res.json({
+      status: 'ok',
+      activeRooms: rooms.size,
+      connectedSockets: socketInfoMap.size,
+      leaderboardSubscribers: leaderboardSubscribers.size
+    });
   });
 
   // Create or register a duel room
@@ -326,6 +584,7 @@ async function startServer() {
 
       rooms.set(normalizedId, newRoom);
       saveRoomsToDisk();
+      broadcastToRoom(normalizedId, { type: 'ROOM_UPDATED', room: newRoom });
       return res.json({ success: true, room: newRoom });
     } catch (err: any) {
       return res.status(500).json({ error: err.message });
@@ -393,6 +652,7 @@ async function startServer() {
         room.lastActivity = Date.now();
         rooms.set(normalizedId, room);
         saveRoomsToDisk();
+        broadcastToRoom(normalizedId, { type: 'ROOM_UPDATED', room });
         return res.json({ success: true, room, isHost: false, guestId: room.guest.id });
       }
 
@@ -418,6 +678,7 @@ async function startServer() {
 
       rooms.set(normalizedId, room);
       saveRoomsToDisk();
+      broadcastToRoom(normalizedId, { type: 'ROOM_UPDATED', room });
       return res.json({ success: true, room, isHost: false, guestId: room.guest.id });
     } catch (err: any) {
       return res.status(500).json({ error: err.message });
@@ -445,6 +706,7 @@ async function startServer() {
       room.lastActivity = Date.now();
       rooms.set(normalizedId, room);
       saveRoomsToDisk();
+      broadcastToRoom(normalizedId, { type: 'ROOM_UPDATED', room });
       return res.json({ success: true, room });
     } catch (err: any) {
       return res.status(500).json({ error: err.message });
@@ -487,85 +749,26 @@ async function startServer() {
       return res.status(404).json({ error: 'Room not found' });
     }
 
-    room.status = 'in_progress';
-    room.currentQIndex = 0;
-    room.roundStartTime = Date.now();
-    room.lastActivity = Date.now();
-
-    rooms.set(normalizedId, room);
-    saveRoomsToDisk();
-    return res.json({ success: true, room });
+    const updated = startRoomMatch(room);
+    return res.json({ success: true, room: updated });
   });
 
-  // Submit answer for a question: when ANYONE picks an answer (whether correct or not),
-  // record result, reveal correct answer, and advance to next question for both connected ends!
+  // Submit answer for a question: processed through authoritative state machine
   app.post('/api/duel/answer', (req, res) => {
-    const { roomId, playerId, qIndex, optionIndex, isCorrect, timeSpent, clientTimestamp } = req.body;
-    const normalizedId = normalizeRoomCode(roomId || '');
-    const room = rooms.get(normalizedId);
-
-    if (!room) {
-      return res.status(404).json({ error: 'Room not found' });
-    }
-
-    const target = room.host.id === playerId ? room.host : room.guest?.id === playerId ? room.guest : null;
-    const opponent = room.host.id === playerId ? room.guest : room.host;
-    if (!target) {
-      return res.status(403).json({ error: 'Player not recognized in this room' });
-    }
-
-    // If the room has already moved past this question or finished, return current state
-    if (room.currentQIndex > qIndex || room.status === 'finished') {
-      return res.json({ success: true, room, alreadyAdvanced: true });
-    }
-
-    // Check if target or opponent already answered this question
-    if (target.answers[qIndex] !== undefined) {
-      return res.json({ success: true, room, alreadyAnswered: true });
-    }
-    if (opponent?.answers[qIndex] !== undefined) {
-      return res.json({ success: true, room, alreadyAnsweredByOpponent: true });
-    }
-
-    const answerTime = clientTimestamp || Date.now();
-    const currentQ = room.questions[qIndex];
-    const correctIndex = currentQ ? currentQ.correctIndex : 0;
-    const isActuallyCorrect = optionIndex === correctIndex;
-
-    target.answers[qIndex] = {
-      option: optionIndex,
-      isCorrect: isActuallyCorrect,
-      timeSpent: timeSpent || 0,
-      timestamp: answerTime
-    };
-
-    if (isActuallyCorrect) {
-      target.score += 10;
-    }
-
-    room.lastRoundResult = {
+    const { roomId, playerId, qIndex, optionIndex, clientTimestamp } = req.body;
+    const result = handlePlayerAnswerSubmission({
+      roomId,
+      playerId,
       qIndex,
-      answeredBy: target.id,
-      answeredByName: target.name,
-      isCorrect: isActuallyCorrect,
       optionIndex,
-      correctIndex,
-      timestamp: answerTime,
-      status: isActuallyCorrect ? 'answered_correct' : 'answered_incorrect'
-    };
+      clientTimestamp
+    });
 
-    // RULE: If anyone picks an answer whether correct or not, proceed to next question at both ends!
-    if (qIndex + 1 < room.questions.length) {
-      room.currentQIndex = qIndex + 1;
-      room.roundStartTime = Date.now();
-    } else {
-      finishRoomMatch(room);
+    if (!result.success) {
+      return res.status(400).json({ error: result.error || 'Failed to submit answer' });
     }
 
-    room.lastActivity = Date.now();
-    rooms.set(normalizedId, room);
-    saveRoomsToDisk();
-    return res.json({ success: true, room });
+    return res.json({ success: true, room: result.room, alreadyAnswered: result.alreadyAnswered });
   });
 
   // GET Real Leaderboard (sorted descending by points and rating)
@@ -593,6 +796,7 @@ async function startServer() {
         avatarSeed
       });
 
+      broadcastLeaderboardUpdate(true);
       return res.json({ success: true, leaderboard: getSortedLeaderboard() });
     } catch (err: any) {
       return res.status(500).json({ error: err.message });
@@ -603,25 +807,11 @@ async function startServer() {
   app.post('/api/duel/next-round', (req, res) => {
     const { roomId, qIndex } = req.body;
     const normalizedId = normalizeRoomCode(roomId || '');
-    let room = rooms.get(normalizedId);
-    if (!room) {
-      loadRoomsFromDisk();
-      room = rooms.get(normalizedId);
+    const updated = advanceToNextRoundOrFinish(normalizedId, qIndex);
+    if (!updated) {
+      return res.status(404).json({ error: 'Room not found or not in progress' });
     }
-
-    if (!room) return res.status(404).json({ error: 'Room not found' });
-
-    if (qIndex + 1 < room.questions.length) {
-      room.currentQIndex = Math.max(room.currentQIndex, qIndex + 1);
-      room.roundStartTime = Date.now();
-    } else {
-      room.status = 'finished';
-    }
-
-    room.lastActivity = Date.now();
-    rooms.set(normalizedId, room);
-    saveRoomsToDisk();
-    return res.json({ success: true, room });
+    return res.json({ success: true, room: updated });
   });
 
   // Request Rematch with fresh questions
@@ -636,9 +826,13 @@ async function startServer() {
 
     if (!room) return res.status(404).json({ error: 'Room not found' });
 
+    clearRoomTimer(normalizedId);
     room.status = 'ready';
     room.currentQIndex = 0;
+    room.isTransitioning = false;
+    room.transitionEndsAt = undefined;
     room.winner = undefined;
+    room.lastRoundResult = undefined;
     room.host.score = 0;
     room.host.answers = {};
     if (room.guest) {
@@ -652,6 +846,7 @@ async function startServer() {
     room.lastActivity = Date.now();
     rooms.set(normalizedId, room);
     saveRoomsToDisk();
+    broadcastToRoom(normalizedId, { type: 'ROOM_UPDATED', room });
     return res.json({ success: true, room });
   });
 
@@ -666,6 +861,7 @@ async function startServer() {
     }
 
     if (room) {
+      clearRoomTimer(normalizedId);
       if (room.host.id === playerId) {
         room.status = 'waiting';
       } else if (room.guest?.id === playerId) {
@@ -675,6 +871,7 @@ async function startServer() {
       room.lastActivity = Date.now();
       rooms.set(normalizedId, room);
       saveRoomsToDisk();
+      broadcastToRoom(normalizedId, { type: 'ROOM_UPDATED', room });
     }
 
     return res.json({ success: true });
@@ -695,8 +892,203 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running on http://0.0.0.0:${PORT}`);
+  // Create unified HTTP + WebSocket Server
+  const server = http.createServer(app);
+  const wss = new WebSocketServer({ server, path: '/ws' });
+
+  wss.on('connection', (ws: WebSocket) => {
+    socketInfoMap.set(ws, {});
+
+    ws.on('message', (rawData) => {
+      try {
+        const data = JSON.parse(rawData.toString());
+        const info = socketInfoMap.get(ws) || {};
+
+        switch (data.type) {
+          case 'SYNC_TIME': {
+            ws.send(JSON.stringify({
+              type: 'SYNC_TIME_RES',
+              clientTime: data.clientTime,
+              serverTime: Date.now()
+            }));
+            break;
+          }
+
+          case 'SUBSCRIBE_LEADERBOARD': {
+            info.isLeaderboardSub = true;
+            socketInfoMap.set(ws, info);
+            leaderboardSubscribers.add(ws);
+            ws.send(JSON.stringify({
+              type: 'LEADERBOARD_UPDATED',
+              leaderboard: getSortedLeaderboard(),
+              timestamp: Date.now()
+            }));
+            break;
+          }
+
+          case 'UNSUBSCRIBE_LEADERBOARD': {
+            info.isLeaderboardSub = false;
+            socketInfoMap.set(ws, info);
+            leaderboardSubscribers.delete(ws);
+            break;
+          }
+
+          case 'JOIN_ROOM': {
+            const normId = normalizeRoomCode(data.roomId || '');
+            if (!normId) return;
+            info.roomId = normId;
+            info.playerId = data.playerId;
+            socketInfoMap.set(ws, info);
+
+            let set = roomSockets.get(normId);
+            if (!set) {
+              set = new Set();
+              roomSockets.set(normId, set);
+            }
+            set.add(ws);
+
+            let room = rooms.get(normId);
+            if (!room) {
+              loadRoomsFromDisk();
+              room = rooms.get(normId);
+            }
+
+            if (room) {
+              if (data.playerId) {
+                if (room.host.id === data.playerId) {
+                  room.host.lastSeen = Date.now();
+                  if (data.name) room.host.name = data.name;
+                  if (data.university) room.host.university = data.university;
+                } else if (room.guest?.id === data.playerId) {
+                  room.guest.lastSeen = Date.now();
+                  if (data.name) room.guest.name = data.name;
+                  if (data.university) room.guest.university = data.university;
+                }
+                rooms.set(normId, room);
+                saveRoomsToDisk();
+              }
+
+              ws.send(JSON.stringify({
+                type: 'ROOM_STATE',
+                room,
+                serverTime: Date.now()
+              }));
+
+              broadcastToRoom(normId, {
+                type: 'PLAYER_PRESENCE',
+                playerId: data.playerId,
+                status: 'online',
+                room
+              });
+            }
+            break;
+          }
+
+          case 'START_MATCH': {
+            const normId = normalizeRoomCode(data.roomId || '');
+            const room = rooms.get(normId);
+            if (room) {
+              startRoomMatch(room);
+            }
+            break;
+          }
+
+          case 'SUBMIT_ANSWER': {
+            handlePlayerAnswerSubmission({
+              roomId: data.roomId,
+              playerId: data.playerId,
+              qIndex: data.qIndex,
+              optionIndex: data.optionIndex,
+              clientTimestamp: data.clientTimestamp
+            });
+            break;
+          }
+
+          case 'REMATCH': {
+            const normId = normalizeRoomCode(data.roomId || '');
+            const room = rooms.get(normId);
+            if (room) {
+              clearRoomTimer(normId);
+              room.status = 'ready';
+              room.currentQIndex = 0;
+              room.isTransitioning = false;
+              room.transitionEndsAt = undefined;
+              room.winner = undefined;
+              room.lastRoundResult = undefined;
+              room.host.score = 0;
+              room.host.answers = {};
+              if (room.guest) {
+                room.guest.score = 0;
+                room.guest.answers = {};
+              }
+              if (data.newQuestions && data.newQuestions.length > 0) {
+                room.questions = data.newQuestions;
+              }
+              room.lastActivity = Date.now();
+              rooms.set(normId, room);
+              saveRoomsToDisk();
+              broadcastToRoom(normId, { type: 'ROOM_UPDATED', room });
+            }
+            break;
+          }
+
+          case 'LEAVE_ROOM': {
+            const normId = normalizeRoomCode(data.roomId || '');
+            const room = rooms.get(normId);
+            if (room) {
+              clearRoomTimer(normId);
+              if (room.host.id === data.playerId) {
+                room.status = 'waiting';
+              } else if (room.guest?.id === data.playerId) {
+                room.guest = undefined;
+                room.status = 'waiting';
+              }
+              room.lastActivity = Date.now();
+              rooms.set(normId, room);
+              saveRoomsToDisk();
+              broadcastToRoom(normId, { type: 'ROOM_UPDATED', room });
+            }
+            break;
+          }
+        }
+      } catch (err) {
+        console.warn('WS parse error:', err);
+      }
+    });
+
+    ws.on('close', () => {
+      const info = socketInfoMap.get(ws);
+      if (info) {
+        if (info.isLeaderboardSub) {
+          leaderboardSubscribers.delete(ws);
+        }
+        if (info.roomId) {
+          const set = roomSockets.get(info.roomId);
+          if (set) {
+            set.delete(ws);
+            if (set.size === 0) roomSockets.delete(info.roomId);
+          }
+          if (info.playerId) {
+            const room = rooms.get(info.roomId);
+            if (room) {
+              if (room.host.id === info.playerId) room.host.lastSeen = Date.now();
+              if (room.guest?.id === info.playerId) room.guest.lastSeen = Date.now();
+              broadcastToRoom(info.roomId, {
+                type: 'PLAYER_PRESENCE',
+                playerId: info.playerId,
+                status: 'offline',
+                room
+              });
+            }
+          }
+        }
+      }
+      socketInfoMap.delete(ws);
+    });
+  });
+
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server running with WebSockets on http://0.0.0.0:${PORT}`);
   });
 }
 
