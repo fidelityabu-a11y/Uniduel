@@ -1,0 +1,6 @@
+{
+  "name": "UDuel Prep: University Duel Competition Trainer",
+  "description": "Master Data Analysis, Applied Mathematics, General Knowledge, and Verbal Reasoning with timed section drills, mixed tournament duels, friend vs. friend battles, and global leaderboards.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
