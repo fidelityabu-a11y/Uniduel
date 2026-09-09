@@ -1,0 +1,43 @@
+[
+  {
+    "id": "UD-7712",
+    "status": "ready",
+    "createdAt": 1788985834146,
+    "lastActivity": 1788985834171,
+    "host": {
+      "id": "host_ade",
+      "name": "Adeola Balogun",
+      "university": "UNILAG",
+      "score": 0,
+      "answers": {},
+      "isReady": true,
+      "lastSeen": 1788985834146
+    },
+    "guest": {
+      "id": "guest_chidi",
+      "name": "Chidi Okonkwo (Updated)",
+      "university": "UNN Enugu Campus",
+      "score": 0,
+      "answers": {},
+      "isReady": true,
+      "lastSeen": 1788985834171
+    },
+    "questions": [
+      {
+        "id": "q1",
+        "section": "physics",
+        "question": "What is velocity?",
+        "options": [
+          "Speed with direction",
+          "Acceleration",
+          "Mass",
+          "Work"
+        ],
+        "correctIndex": 0
+      }
+    ],
+    "questionCount": 1,
+    "section": "physics",
+    "currentQIndex": 0
+  }
+]

@@ -48,21 +48,49 @@ try {
 // Normalize duel room codes from text or URL (e.g., 'UD-1234', '1234', 'ud1234', full URL)
 export function normalizeRoomCode(code: string): string {
   if (!code) return '';
-  let cleaned = String(code).trim();
+  let str = String(code).trim();
   try {
-    if (cleaned.includes('duelRoom=')) {
-      const match = cleaned.match(/duelRoom=([A-Za-z0-9_-]+)/);
+    if (str.includes('duelRoom=')) {
+      const match = str.match(/duelRoom=([A-Za-z0-9_%-]+)/i);
       if (match && match[1]) {
-        cleaned = match[1];
+        str = decodeURIComponent(match[1]);
+      }
+    } else if (str.includes('http://') || str.includes('https://')) {
+      const parsedUrl = new URL(str);
+      const roomFromSearch = parsedUrl.searchParams.get('duelRoom');
+      if (roomFromSearch) {
+        str = roomFromSearch;
+      } else if (parsedUrl.hash && parsedUrl.hash.includes('duelRoom=')) {
+        const hashMatch = parsedUrl.hash.match(/duelRoom=([A-Za-z0-9_%-]+)/i);
+        if (hashMatch && hashMatch[1]) {
+          str = decodeURIComponent(hashMatch[1]);
+        }
       }
     }
   } catch {}
-  cleaned = cleaned.toUpperCase().replace(/\s+/g, '');
-  if (/^\d{4}$/.test(cleaned)) {
-    cleaned = 'UD-' + cleaned;
+
+  // Strip quotes, angle brackets, slashes, whitespace
+  str = str.replace(/['"<>\/]/g, '').trim().toUpperCase();
+
+  // If format contains UD prefix with 4-6 digits (e.g. UD-4821, UD 4821, UD4821)
+  const udMatch = str.match(/\bUD[\s-_:]*(\d{4,6})\b/i);
+  if (udMatch && udMatch[1]) {
+    return `UD-${udMatch[1]}`;
   }
-  if (/^UD\d{4}$/.test(cleaned)) {
-    cleaned = 'UD-' + cleaned.substring(2);
+
+  // If format contains 4-6 digits anywhere (e.g. 4821)
+  const digitMatch = str.match(/\b(\d{4,6})\b/);
+  if (digitMatch && digitMatch[1]) {
+    return `UD-${digitMatch[1]}`;
+  }
+
+  // Fallback: strip anything other than letters, digits, and hyphen
+  const cleaned = str.replace(/[^A-Z0-9-]/gi, '').toUpperCase();
+  if (/^\d{4,6}$/.test(cleaned)) {
+    return `UD-${cleaned}`;
+  }
+  if (/^UD\d{4,6}$/.test(cleaned)) {
+    return `UD-${cleaned.substring(2)}`;
   }
   return cleaned;
 }
@@ -163,42 +191,101 @@ export async function joinDuelRoom(params: {
       const data = await res.json();
       broadcastRoomChange(data.room);
       return { success: true, room: data.room, guestId: data.guestId, isHost: data.isHost };
-    } else {
-      const errData = await res.json().catch(() => ({}));
-      return { success: false, error: errData.error || 'Failed to join room' };
     }
-  } catch (err) {
-    console.warn('API join error, trying localStorage fallback:', err);
-  }
 
-  // Local storage fallback for same-browser testing
-  const raw = localStorage.getItem(`uduel_room_${normalizedId}`);
-  if (raw) {
-    try {
-      const room: DuelRoom = JSON.parse(raw);
-      let guestId = params.guest.id;
-      if (room.host.id === guestId) {
-        guestId = 'guest_' + Math.random().toString(36).substring(2, 8) + '_' + Date.now().toString(36);
+    // If server responded with error (e.g. 404), check if we have the room locally to restore it!
+    const errData = await res.json().catch(() => ({}));
+    const raw = localStorage.getItem(`uduel_room_${normalizedId}`);
+    if (raw) {
+      try {
+        const localRoom: DuelRoom = JSON.parse(raw);
+        // Attempt to re-seed room on the server
+        const reseedRes = await fetch('/api/duel/create', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            roomId: normalizedId,
+            host: localRoom.host,
+            questions: localRoom.questions,
+            questionCount: localRoom.questionCount,
+            section: localRoom.section
+          })
+        });
+
+        if (reseedRes.ok) {
+          // Retry join now that room exists on server
+          const retryJoinRes = await fetch('/api/duel/join', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ roomId: normalizedId, guest: params.guest })
+          });
+          if (retryJoinRes.ok) {
+            const retryData = await retryJoinRes.json();
+            broadcastRoomChange(retryData.room);
+            return { success: true, room: retryData.room, guestId: retryData.guestId, isHost: retryData.isHost };
+          }
+        }
+
+        // Local storage / same-browser fallback
+        let guestId = params.guest.id;
+        if (localRoom.host.id === guestId) {
+          guestId = 'guest_' + Math.random().toString(36).substring(2, 8) + '_' + Date.now().toString(36);
+        }
+        localRoom.guest = {
+          id: guestId,
+          name: params.guest.name || 'Challenger',
+          university: params.guest.university || 'University of Lagos (UNILAG)',
+          score: 0,
+          answers: {},
+          isReady: true,
+          lastSeen: Date.now()
+        };
+        localRoom.status = 'ready';
+        localRoom.lastActivity = Date.now();
+        broadcastRoomChange(localRoom);
+        return { success: true, room: localRoom, guestId, isHost: false };
+      } catch (e) {
+        console.warn('Failed local recovery on join:', e);
       }
-      room.guest = {
-        id: guestId,
-        name: params.guest.name || 'Challenger',
-        university: params.guest.university || 'University of Lagos (UNILAG)',
-        score: 0,
-        answers: {},
-        isReady: true,
-        lastSeen: Date.now()
-      };
-      room.status = 'ready';
-      room.lastActivity = Date.now();
-      broadcastRoomChange(room);
-      return { success: true, room, guestId };
-    } catch {
-      // parse error
     }
-  }
 
-  return { success: false, error: `Could not find room with code "${normalizedId}". Check the code and try again.` };
+    return {
+      success: false,
+      error: errData.error || `Could not find room "${normalizedId}". Please verify the code or ask the host for an invite link.`
+    };
+  } catch (err) {
+    console.warn('API join network error, trying local recovery:', err);
+
+    // Fallback for network issues or same-browser tabs
+    const raw = localStorage.getItem(`uduel_room_${normalizedId}`);
+    if (raw) {
+      try {
+        const localRoom: DuelRoom = JSON.parse(raw);
+        let guestId = params.guest.id;
+        if (localRoom.host.id === guestId) {
+          guestId = 'guest_' + Math.random().toString(36).substring(2, 8) + '_' + Date.now().toString(36);
+        }
+        localRoom.guest = {
+          id: guestId,
+          name: params.guest.name || 'Challenger',
+          university: params.guest.university || 'University of Lagos (UNILAG)',
+          score: 0,
+          answers: {},
+          isReady: true,
+          lastSeen: Date.now()
+        };
+        localRoom.status = 'ready';
+        localRoom.lastActivity = Date.now();
+        broadcastRoomChange(localRoom);
+        return { success: true, room: localRoom, guestId, isHost: false };
+      } catch {}
+    }
+
+    return {
+      success: false,
+      error: `Network error connecting to duel server. Check your connection or verify room code "${normalizedId}".`
+    };
+  }
 }
 
 export async function updateDuelPlayerName(params: {
@@ -258,7 +345,20 @@ export async function fetchDuelRoom(roomId: string, playerId?: string): Promise<
   const raw = localStorage.getItem(`uduel_room_${normalizedId}`);
   if (raw) {
     try {
-      return JSON.parse(raw);
+      const room: DuelRoom = JSON.parse(raw);
+      // Auto-heal: re-sync room to server if server lost it
+      fetch('/api/duel/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          roomId: normalizedId,
+          host: room.host,
+          questions: room.questions,
+          questionCount: room.questionCount,
+          section: room.section
+        })
+      }).catch(() => {});
+      return room;
     } catch {
       return null;
     }

@@ -39,12 +39,25 @@ export default function App() {
   const [friendDuelQuestions, setFriendDuelQuestions] = useState<Question[] | undefined>(undefined);
 
   useEffect(() => {
-    // Check URL search params for shared duel room if any
-    const params = new URLSearchParams(window.location.search);
-    const roomParam = params.get('duelRoom');
-    if (roomParam) {
-      setCurrentMode('friend_duel');
-    }
+    // Check URL search params and hash for shared duel room if any
+    try {
+      const searchParams = new URLSearchParams(window.location.search);
+      let roomParam = searchParams.get('duelRoom');
+
+      if (!roomParam && window.location.hash) {
+        const hashStr = window.location.hash;
+        if (hashStr.includes('duelRoom=')) {
+          const match = hashStr.match(/duelRoom=([A-Za-z0-9_%-]+)/i);
+          if (match && match[1]) {
+            roomParam = decodeURIComponent(match[1]);
+          }
+        }
+      }
+
+      if (roomParam) {
+        setCurrentMode('friend_duel');
+      }
+    } catch {}
   }, []);
 
   const handleToggleSound = () => {

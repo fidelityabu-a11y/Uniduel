@@ -160,9 +160,44 @@ export const FriendDuel: React.FC<FriendDuelProps> = ({
   const localTimerRef = useRef<NodeJS.Timeout | null>(null);
   const localAutoAdvanceTimerRef = useRef<NodeJS.Timeout | null>(null);
 
+  // Helper to extract room code from search params or hash
+  const extractRoomCodeFromUrl = (): string | null => {
+    if (typeof window === 'undefined') return null;
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const fromSearch = params.get('duelRoom');
+      if (fromSearch) return fromSearch;
+
+      if (window.location.hash) {
+        const match = window.location.hash.match(/duelRoom=([A-Za-z0-9_%-]+)/i);
+        if (match && match[1]) {
+          return decodeURIComponent(match[1]);
+        }
+      }
+    } catch {}
+    return null;
+  };
+
   // Restore stored active local duel or stored online room on mount
   useEffect(() => {
-    // 1. Check local duel persistence
+    // 1. Check URL invite parameter FIRST (has top priority)
+    const urlCodeRaw = extractRoomCodeFromUrl();
+    if (urlCodeRaw) {
+      const normalized = normalizeRoomCode(urlCodeRaw);
+      if (normalized) {
+        // Clear any old stored room so it doesn't conflict
+        saveStoredOnlineRoomId(null);
+        setDuelFormat('room_code');
+        setJoinCodeInput(normalized);
+        setUrlInviteCode(normalized);
+
+        // Auto-join the invited room immediately
+        handleJoinOnlineRoom(normalized);
+        return;
+      }
+    }
+
+    // 2. Check local duel persistence
     const savedLocal = getStoredLocalDuel();
     if (savedLocal && savedLocal.isActive && !savedLocal.isFinished && savedLocal.questions && savedLocal.questions.length > 0) {
       setLocalActiveQuestions(savedLocal.questions);
@@ -177,15 +212,20 @@ export const FriendDuel: React.FC<FriendDuelProps> = ({
       if (savedLocal.questionCount) setQuestionCount(savedLocal.questionCount);
       setIsLocalDuelActive(true);
       setDuelFormat('buzzer_battle');
+      return;
     }
 
-    // 2. Check online room persistence
+    // 3. Check online room persistence (only if user is actually host or guest)
     const savedRoomId = getStoredOnlineRoomId();
     if (savedRoomId && !activeOnlineRoom) {
       getDuelRoom(savedRoomId).then((room) => {
         if (room && room.status !== 'finished') {
-          setActiveOnlineRoom(room);
-          setDuelFormat('room_code');
+          if (room.host.id === myPlayerId || room.guest?.id === myPlayerId) {
+            setActiveOnlineRoom(room);
+            setDuelFormat('room_code');
+          } else {
+            saveStoredOnlineRoomId(null);
+          }
         } else {
           saveStoredOnlineRoomId(null);
         }
@@ -234,20 +274,6 @@ export const FriendDuel: React.FC<FriendDuelProps> = ({
       saveStoredOnlineRoomId(null);
     }
   }, [activeOnlineRoom?.id, activeOnlineRoom?.status]);
-
-  // URL query check: ?duelRoom=CODE
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const params = new URLSearchParams(window.location.search);
-      const roomParam = params.get('duelRoom');
-      if (roomParam) {
-        const normalized = normalizeRoomCode(roomParam);
-        setDuelFormat('room_code');
-        setJoinCodeInput(normalized);
-        setUrlInviteCode(normalized);
-      }
-    }
-  }, []);
 
   // Real-time Room subscription
   useEffect(() => {
@@ -314,12 +340,15 @@ export const FriendDuel: React.FC<FriendDuelProps> = ({
     setIsJoiningRoom(true);
     setJoinError(null);
 
+    const guestContestantName = guestName.trim() || storedProfile.name || 'Challenger';
+    const guestUniversity = guestUni || storedProfile.university || 'University of Lagos (UNILAG)';
+
     const res = await joinDuelRoom({
       roomId: targetCode,
       guest: {
         id: myPlayerId,
-        name: guestName.trim() || 'Challenger',
-        university: guestUni
+        name: guestContestantName,
+        university: guestUniversity
       }
     });
 
@@ -333,8 +362,9 @@ export const FriendDuel: React.FC<FriendDuelProps> = ({
       setActiveOnlineRoom(res.room);
       saveStoredOnlineRoomId(res.room.id);
       setUrlInviteCode(null);
+      setJoinError(null);
     } else {
-      setJoinError(res.error || 'Failed to join room. Please verify the code.');
+      setJoinError(res.error || `Failed to join room "${targetCode}". Please verify the code.`);
     }
   };
 

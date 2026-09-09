@@ -1,5 +1,6 @@
 import express from 'express';
 import path from 'path';
+import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
 
 export interface DuelPlayer {
@@ -53,11 +54,75 @@ export interface RealLeaderboardEntry {
   isCurrentUser?: boolean;
 }
 
-// In-memory Room State with automated cleanup of stale rooms (> 2 hours)
+// Persistent storage file paths
+const ROOMS_STORE_PATH = path.join(process.cwd(), '.duel_rooms_store.json');
+const LEADERBOARD_STORE_PATH = path.join(process.cwd(), '.duel_leaderboard_store.json');
+
+// Room State with disk persistence
 const rooms: Map<string, DuelRoom> = new Map();
 
-// In-memory Real Leaderboard: real contestants who have earned points
+// Real Leaderboard: real contestants who have earned points
 const realLeaderboard: Map<string, RealLeaderboardEntry> = new Map();
+
+function loadRoomsFromDisk() {
+  try {
+    if (fs.existsSync(ROOMS_STORE_PATH)) {
+      const content = fs.readFileSync(ROOMS_STORE_PATH, 'utf-8');
+      const data: DuelRoom[] = JSON.parse(content);
+      if (Array.isArray(data)) {
+        const now = Date.now();
+        for (const r of data) {
+          // Keep rooms active up to 4 hours
+          if (r && r.id && (now - (r.lastActivity || r.createdAt || 0) < 4 * 60 * 60 * 1000)) {
+            rooms.set(r.id, r);
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('Failed to load rooms from disk:', err);
+  }
+}
+
+function saveRoomsToDisk() {
+  try {
+    const list = Array.from(rooms.values());
+    fs.writeFileSync(ROOMS_STORE_PATH, JSON.stringify(list, null, 2), 'utf-8');
+  } catch (err) {
+    console.warn('Failed to save rooms to disk:', err);
+  }
+}
+
+function loadLeaderboardFromDisk() {
+  try {
+    if (fs.existsSync(LEADERBOARD_STORE_PATH)) {
+      const content = fs.readFileSync(LEADERBOARD_STORE_PATH, 'utf-8');
+      const data: RealLeaderboardEntry[] = JSON.parse(content);
+      if (Array.isArray(data)) {
+        for (const entry of data) {
+          if (entry && entry.id) {
+            realLeaderboard.set(entry.id, entry);
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('Failed to load leaderboard from disk:', err);
+  }
+}
+
+function saveLeaderboardToDisk() {
+  try {
+    const list = Array.from(realLeaderboard.values());
+    fs.writeFileSync(LEADERBOARD_STORE_PATH, JSON.stringify(list, null, 2), 'utf-8');
+  } catch (err) {
+    console.warn('Failed to save leaderboard to disk:', err);
+  }
+}
+
+// Initial hydration from disk
+loadRoomsFromDisk();
+loadLeaderboardFromDisk();
 
 function getSortedLeaderboard(): RealLeaderboardEntry[] {
   const list = Array.from(realLeaderboard.values());
@@ -120,25 +185,54 @@ function updateServerLeaderboardUser(data: {
 
   existing.lastActive = Date.now();
   realLeaderboard.set(data.playerId, existing);
+  saveLeaderboardToDisk();
 }
 
 function normalizeRoomCode(code: string): string {
   if (!code) return '';
-  let cleaned = String(code).trim();
+  let str = String(code).trim();
   try {
-    if (cleaned.includes('duelRoom=')) {
-      const match = cleaned.match(/duelRoom=([A-Za-z0-9_-]+)/);
+    if (str.includes('duelRoom=')) {
+      const match = str.match(/duelRoom=([A-Za-z0-9_%-]+)/i);
       if (match && match[1]) {
-        cleaned = match[1];
+        str = decodeURIComponent(match[1]);
+      }
+    } else if (str.includes('http://') || str.includes('https://')) {
+      const parsedUrl = new URL(str);
+      const roomFromSearch = parsedUrl.searchParams.get('duelRoom');
+      if (roomFromSearch) {
+        str = roomFromSearch;
+      } else if (parsedUrl.hash && parsedUrl.hash.includes('duelRoom=')) {
+        const hashMatch = parsedUrl.hash.match(/duelRoom=([A-Za-z0-9_%-]+)/i);
+        if (hashMatch && hashMatch[1]) {
+          str = decodeURIComponent(hashMatch[1]);
+        }
       }
     }
   } catch {}
-  cleaned = cleaned.toUpperCase().replace(/\s+/g, '');
-  if (/^\d{4}$/.test(cleaned)) {
-    cleaned = 'UD-' + cleaned;
+
+  // Strip punctuation, quotes, angle brackets, slashes
+  str = str.replace(/['"<>\/]/g, '').trim().toUpperCase();
+
+  // If format contains UD prefix with 4-6 digits (e.g. UD-4821, UD 4821, UD4821)
+  const udMatch = str.match(/\bUD[\s-_:]*(\d{4,6})\b/i);
+  if (udMatch && udMatch[1]) {
+    return `UD-${udMatch[1]}`;
   }
-  if (/^UD\d{4}$/.test(cleaned)) {
-    cleaned = 'UD-' + cleaned.substring(2);
+
+  // If format contains 4-6 digits anywhere (e.g. 4821 or Room 4821)
+  const digitMatch = str.match(/\b(\d{4,6})\b/);
+  if (digitMatch && digitMatch[1]) {
+    return `UD-${digitMatch[1]}`;
+  }
+
+  // Fallback: strip anything other than letters, digits, and hyphen
+  const cleaned = str.replace(/[^A-Z0-9-]/gi, '').toUpperCase();
+  if (/^\d{4,6}$/.test(cleaned)) {
+    return `UD-${cleaned}`;
+  }
+  if (/^UD\d{4,6}$/.test(cleaned)) {
+    return `UD-${cleaned.substring(2)}`;
   }
   return cleaned;
 }
@@ -192,7 +286,8 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  app.use(express.json());
+  app.use(express.json({ limit: '25mb' }));
+  app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 
   // API Health Check
   app.get('/api/health', (req, res) => {
@@ -215,7 +310,7 @@ async function startServer() {
         lastActivity: Date.now(),
         host: {
           id: host.id || 'host_' + Date.now(),
-          name: host.name || 'Contestant 1',
+          name: (host.name || '').trim() || 'Contestant 1',
           university: host.university || 'University of Ibadan',
           score: 0,
           answers: {},
@@ -230,6 +325,7 @@ async function startServer() {
       };
 
       rooms.set(normalizedId, newRoom);
+      saveRoomsToDisk();
       return res.json({ success: true, room: newRoom });
     } catch (err: any) {
       return res.status(500).json({ error: err.message });
@@ -239,16 +335,47 @@ async function startServer() {
   // Join an existing duel room
   app.post('/api/duel/join', (req, res) => {
     try {
-      const { roomId, guest } = req.body;
+      const { roomId, guest, createIfMissing, host, questions, questionCount, section } = req.body;
       if (!roomId || !guest) {
         return res.status(400).json({ error: 'Missing roomId or guest details' });
       }
 
       const normalizedId = normalizeRoomCode(roomId);
-      const room = rooms.get(normalizedId);
+      let room = rooms.get(normalizedId);
+
+      // Check disk if not in memory
+      if (!room) {
+        loadRoomsFromDisk();
+        room = rooms.get(normalizedId);
+      }
+
+      // If room not found but client provided rehydration details (e.g. from local storage)
+      if (!room && createIfMissing && host) {
+        room = {
+          id: normalizedId,
+          status: 'waiting',
+          createdAt: Date.now(),
+          lastActivity: Date.now(),
+          host: {
+            id: host.id || 'host_' + Date.now(),
+            name: (host.name || '').trim() || 'Contestant 1',
+            university: host.university || 'University of Ibadan',
+            score: 0,
+            answers: {},
+            isReady: true,
+            lastSeen: Date.now()
+          },
+          guest: undefined,
+          questions: questions || [],
+          questionCount: questionCount || 8,
+          section: section || 'mixed',
+          currentQIndex: 0
+        };
+        rooms.set(normalizedId, room);
+      }
 
       if (!room) {
-        return res.status(404).json({ error: `Room "${normalizedId}" not found. Please verify the code.` });
+        return res.status(404).json({ error: `Room "${normalizedId}" not found. Please verify the code or ask your friend for a new room code.` });
       }
 
       // If guest ID matches host ID (e.g. testing in the same browser session or same client ID)
@@ -265,6 +392,7 @@ async function startServer() {
         room.guest.lastSeen = Date.now();
         room.lastActivity = Date.now();
         rooms.set(normalizedId, room);
+        saveRoomsToDisk();
         return res.json({ success: true, room, isHost: false, guestId: room.guest.id });
       }
 
@@ -289,6 +417,7 @@ async function startServer() {
       room.lastActivity = Date.now();
 
       rooms.set(normalizedId, room);
+      saveRoomsToDisk();
       return res.json({ success: true, room, isHost: false, guestId: room.guest.id });
     } catch (err: any) {
       return res.status(500).json({ error: err.message });
@@ -315,6 +444,7 @@ async function startServer() {
 
       room.lastActivity = Date.now();
       rooms.set(normalizedId, room);
+      saveRoomsToDisk();
       return res.json({ success: true, room });
     } catch (err: any) {
       return res.status(500).json({ error: err.message });
@@ -324,7 +454,11 @@ async function startServer() {
   // Get current room status
   app.get('/api/duel/room/:id', (req, res) => {
     const normalizedId = normalizeRoomCode(req.params.id);
-    const room = rooms.get(normalizedId);
+    let room = rooms.get(normalizedId);
+    if (!room) {
+      loadRoomsFromDisk();
+      room = rooms.get(normalizedId);
+    }
     if (!room) {
       return res.status(404).json({ error: 'Room not found' });
     }
@@ -343,7 +477,11 @@ async function startServer() {
   app.post('/api/duel/start', (req, res) => {
     const { roomId, playerId } = req.body;
     const normalizedId = normalizeRoomCode(roomId || '');
-    const room = rooms.get(normalizedId);
+    let room = rooms.get(normalizedId);
+    if (!room) {
+      loadRoomsFromDisk();
+      room = rooms.get(normalizedId);
+    }
 
     if (!room) {
       return res.status(404).json({ error: 'Room not found' });
@@ -355,6 +493,7 @@ async function startServer() {
     room.lastActivity = Date.now();
 
     rooms.set(normalizedId, room);
+    saveRoomsToDisk();
     return res.json({ success: true, room });
   });
 
@@ -425,6 +564,7 @@ async function startServer() {
 
     room.lastActivity = Date.now();
     rooms.set(normalizedId, room);
+    saveRoomsToDisk();
     return res.json({ success: true, room });
   });
 
@@ -463,7 +603,11 @@ async function startServer() {
   app.post('/api/duel/next-round', (req, res) => {
     const { roomId, qIndex } = req.body;
     const normalizedId = normalizeRoomCode(roomId || '');
-    const room = rooms.get(normalizedId);
+    let room = rooms.get(normalizedId);
+    if (!room) {
+      loadRoomsFromDisk();
+      room = rooms.get(normalizedId);
+    }
 
     if (!room) return res.status(404).json({ error: 'Room not found' });
 
@@ -476,6 +620,7 @@ async function startServer() {
 
     room.lastActivity = Date.now();
     rooms.set(normalizedId, room);
+    saveRoomsToDisk();
     return res.json({ success: true, room });
   });
 
@@ -483,7 +628,11 @@ async function startServer() {
   app.post('/api/duel/rematch', (req, res) => {
     const { roomId, newQuestions } = req.body;
     const normalizedId = normalizeRoomCode(roomId || '');
-    const room = rooms.get(normalizedId);
+    let room = rooms.get(normalizedId);
+    if (!room) {
+      loadRoomsFromDisk();
+      room = rooms.get(normalizedId);
+    }
 
     if (!room) return res.status(404).json({ error: 'Room not found' });
 
@@ -502,6 +651,7 @@ async function startServer() {
 
     room.lastActivity = Date.now();
     rooms.set(normalizedId, room);
+    saveRoomsToDisk();
     return res.json({ success: true, room });
   });
 
@@ -509,7 +659,11 @@ async function startServer() {
   app.post('/api/duel/leave', (req, res) => {
     const { roomId, playerId } = req.body;
     const normalizedId = normalizeRoomCode(roomId || '');
-    const room = rooms.get(normalizedId);
+    let room = rooms.get(normalizedId);
+    if (!room) {
+      loadRoomsFromDisk();
+      room = rooms.get(normalizedId);
+    }
 
     if (room) {
       if (room.host.id === playerId) {
@@ -519,6 +673,8 @@ async function startServer() {
         room.status = 'waiting';
       }
       room.lastActivity = Date.now();
+      rooms.set(normalizedId, room);
+      saveRoomsToDisk();
     }
 
     return res.json({ success: true });
